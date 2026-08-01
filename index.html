@@ -557,6 +557,8 @@ function seed(){
   const d0 = new Date();
   return {
     version:1, sources, bills, payments:[], theme:null, viewMode:"list", lastBackup:null,
+    updatedAt: d0.getTime(),
+    sync:{on:false, owner:"", repo:"", path:"bill-ledger.json", sha:null, at:null, err:null},
     // months before this are "not tracked yet", not overdue
     startPeriod: d0.getFullYear() + "-" + String(d0.getMonth()+1).padStart(2,"0")
   };
@@ -571,10 +573,16 @@ function load(){
   }catch(e){ storageOK = false; }
   return seed();
 }
-function save(){
+function saveLocal(){
   if(!storageOK) return;
   try{ localStorage.setItem(KEY, JSON.stringify(S)); }
   catch(e){ storageOK = false; renderWarn(); }
+}
+/** Local write + a debounced push to GitHub when sync is switched on. */
+function save(){
+  S.updatedAt = Date.now();
+  saveLocal();
+  scheduleSync();
 }
 
 const S = load();
@@ -948,6 +956,147 @@ function setStatus(billId, pk, status){
   save();
 }
 
+/* ── GitHub sync ────────────────────────────────────────────────────
+   Writes the ledger back to one file in a PRIVATE repo on every change.
+   The token is held under its own key, never inside S, so it can never
+   end up inside an exported or synced backup.                          */
+const TOKEN_KEY = "billLedger.token";
+const getToken = () => { try{ return localStorage.getItem(TOKEN_KEY) || ""; }catch(e){ return ""; } };
+const setToken = t => {
+  try{ t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY); }catch(e){}
+};
+
+function b64enc(str){
+  const bytes = new TextEncoder().encode(str);
+  let bin = "";
+  for(let i = 0; i < bytes.length; i += 0x8000)
+    bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
+const b64dec = b =>
+  new TextDecoder().decode(Uint8Array.from(atob(String(b).replace(/\s/g, "")), c => c.charCodeAt(0)));
+
+function syncCfg(){
+  return S.sync || (S.sync = {on:false, owner:"", repo:"", path:"bill-ledger.json",
+                              sha:null, at:null, err:null});
+}
+const syncReady = () => {
+  const c = syncCfg();
+  return !!(c.on && c.owner && c.repo && getToken());
+};
+/** What actually gets written — no sync config, no token, ever. */
+function payload(){
+  const {sync, ...rest} = S;
+  return JSON.stringify({...rest, exportedAt:new Date().toISOString()}, null, 2);
+}
+function ghErr(status){
+  if(status === 401) return "Token rejected — it may have expired";
+  if(status === 403) return "Token lacks Contents write access to that repo";
+  if(status === 404) return "Repo or file path not found — check owner/repo";
+  if(status === 409) return "The file changed on GitHub — tap Sync now";
+  if(status === 422) return "GitHub rejected the update";
+  return "GitHub error " + status;
+}
+async function ghReq(method, body){
+  const c = syncCfg();
+  const url = "https://api.github.com/repos/" + encodeURIComponent(c.owner) + "/" +
+              encodeURIComponent(c.repo) + "/contents/" +
+              c.path.split("/").map(encodeURIComponent).join("/");
+  const headers = {
+    "Authorization": "Bearer " + getToken(),
+    "Accept": "application/vnd.github+json",
+    "X-GitHub-Api-Version": "2022-11-28"
+  };
+  if(body) headers["Content-Type"] = "application/json";
+  try{
+    return await fetch(url, {method, headers, body: body ? JSON.stringify(body) : undefined});
+  }catch(e){
+    throw new Error(navigator.onLine === false
+      ? "Offline — changes are saved here and will sync later"
+      : "Can't reach GitHub from this page");
+  }
+}
+async function syncPull(){
+  const res = await ghReq("GET");
+  if(res.status === 404) return {empty:true};
+  if(!res.ok) throw new Error(ghErr(res.status));
+  const j = await res.json();
+  syncCfg().sha = j.sha;
+  return {data: JSON.parse(b64dec(j.content))};
+}
+async function syncPush(){
+  const c = syncCfg();
+  const body = {
+    message: "Ledger update — " + new Date().toISOString().slice(0, 16).replace("T", " "),
+    content: b64enc(payload())
+  };
+  if(c.sha) body.sha = c.sha;
+  let res = await ghReq("PUT", body);
+  if(res.status === 409 || res.status === 422){
+    const cur = await ghReq("GET");                 // stale sha — re-read, retry once
+    if(cur.ok){ body.sha = c.sha = (await cur.json()).sha; res = await ghReq("PUT", body); }
+  }
+  if(!res.ok) throw new Error(ghErr(res.status));
+  const j = await res.json();
+  c.sha = j.content.sha;
+  c.at  = new Date().toISOString();
+  c.err = null;
+  S.lastBackup = {at:c.at, sig:signature()};
+}
+function adopt(d){
+  Object.assign(S, {
+    version:1,
+    sources: d.sources || S.sources,
+    bills:   d.bills   || S.bills,
+    payments:d.payments|| [],
+    startPeriod: d.startPeriod || S.startPeriod,
+    viewMode:    d.viewMode    || S.viewMode,
+    theme:       d.theme ?? S.theme,
+    updatedAt:   d.updatedAt   || Date.now(),
+    lastBackup:  d.lastBackup  || S.lastBackup
+  });
+  applyTheme();
+}
+
+let syncTimer = null, syncing = false;
+function scheduleSync(){
+  if(!syncReady()) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => runSync(true), 2500);
+}
+async function runSync(quiet){
+  if(syncing || !syncReady()) return;
+  syncing = true; render();
+  try{ await syncPush(); }
+  catch(e){ syncCfg().err = e.message; if(!quiet) toast(e.message, 3600); }
+  syncing = false;
+  saveLocal(); render();
+  if($("#sheet").classList.contains("on") && !UI.billId) openData();
+}
+/** On open: whichever side is newer wins. */
+async function syncBoot(){
+  if(!syncReady()) return;
+  syncing = true; render();
+  try{
+    const r = await syncPull();
+    if(r.empty){ await syncPush(); }
+    else{
+      const remoteAt = r.data.updatedAt || 0, localAt = S.updatedAt || 0;
+      if(remoteAt > localAt){
+        adopt(r.data);
+        S.lastBackup = {at:new Date().toISOString(), sig:signature()};
+      }else if(localAt > remoteAt){
+        await syncPush();
+      }else{
+        S.lastBackup = {at:new Date().toISOString(), sig:signature()};
+      }
+    }
+    syncCfg().err = null;
+  }catch(e){ syncCfg().err = e.message; }
+  syncing = false;
+  saveLocal(); render();
+}
+
 /* ── sheet ──────────────────────────────────────────────────────── */
 function openSheet(billId, period){
   UI.billId = billId;
@@ -1139,13 +1288,67 @@ function wireSheet(b, pk){
   });
 }
 
+/* ── data sheet: sync section ───────────────────────────────────── */
+function syncAgo(){
+  const c = syncCfg();
+  if(!c.at) return "not synced yet";
+  const mins = Math.round((Date.now() - new Date(c.at).getTime()) / 60000);
+  if(mins < 1)  return "synced just now";
+  if(mins < 60) return "synced " + mins + " min ago";
+  const hrs = Math.round(mins / 60);
+  if(hrs < 24)  return "synced " + hrs + " hour" + (hrs===1?"":"s") + " ago";
+  return "synced " + Math.round(hrs / 24) + " day" + (Math.round(hrs/24)===1?"":"s") + " ago";
+}
+function syncSectionHTML(){
+  const c = syncCfg();
+  if(syncReady()){
+    const bad = !!c.err;
+    return '<div class="sec"><span class="eyebrow">Automatic sync</span>' +
+      '<div class="bstat ' + (bad ? "dirty" : "clean") + '">' +
+        '<i class="dot" style="background:' + (bad ? "var(--warn)" : "var(--ok)") + '"></i>' +
+        '<span>' + (syncing ? "Syncing…" : bad ? esc(c.err) : "On &middot; " + syncAgo()) + '</span></div>' +
+      '<div class="hint" style="margin-bottom:10px">Every change writes back to <code>' +
+        esc(c.owner) + '/' + esc(c.repo) + '/' + esc(c.path) + '</code></div>' +
+      '<button class="ghost" id="syncNow">Sync now</button>' +
+      '<button class="ghost" id="syncOff">Disconnect</button>' +
+    '</div>';
+  }
+  return '<div class="sec"><span class="eyebrow">Automatic sync</span>' +
+    '<div class="hint" style="margin-bottom:11px">Connect a <b>private</b> GitHub repo and the ledger saves itself back to one file on every change — no manual backups, and it follows you across devices.</div>' +
+    '<div class="fields">' +
+      '<div class="two">' +
+        '<div class="field"><label for="syOwner">GitHub username</label>' +
+          '<input type="text" id="syOwner" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="your-username" value="' + esc(c.owner) + '"></div>' +
+        '<div class="field"><label for="syRepo">Private repo</label>' +
+          '<input type="text" id="syRepo" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="bill-ledger-data" value="' + esc(c.repo) + '"></div>' +
+      '</div>' +
+      '<div class="field"><label for="syTok">Access token</label>' +
+        '<input type="password" id="syTok" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="github_pat_…"></div>' +
+      '<div class="hint">Stored only on this device, and never written into a backup or the synced file.</div>' +
+    '</div>' +
+    '<button class="primary" id="syncOn" style="margin-top:11px">Connect and sync</button>' +
+    '<details class="howto"><summary>How to set this up (2 minutes)</summary>' +
+      '<ol>' +
+        '<li>On GitHub, create a <b>private</b> empty repo — call it <code>bill-ledger-data</code></li>' +
+        '<li>Go to <b>Settings → Developer settings → Personal access tokens → Fine-grained tokens</b></li>' +
+        '<li><b>Generate new token</b>. Under <b>Repository access</b> pick <b>Only select repositories</b> and choose just that one repo</li>' +
+        '<li>Under <b>Permissions → Repository permissions</b>, set <b>Contents</b> to <b>Read and write</b>. Leave everything else alone</li>' +
+        '<li>Generate it, copy the token, and paste it above</li>' +
+      '</ol>' +
+      '<p>That token can only touch that one repo’s files — it cannot read your other repos or act on your account. Revoke it any time from the same page.</p>' +
+      '<p>Because the repo is private, the data is genuinely protected by GitHub auth, and every change becomes a commit, so you get a full version history for free.</p>' +
+    '</details>' +
+  '</div>';
+}
+
 /* ── data sheet (backup / sources) ──────────────────────────────── */
 function openData(){
   UI.billId = null;
   $("#sheetTitle").textContent = "Data & sources";
   const counts = S.payments.length;
   $("#sheetBody").innerHTML =
-    '<div class="sec"><span class="eyebrow">iCloud backup</span>' +
+    syncSectionHTML() +
+    '<div class="sec"><span class="eyebrow">Manual backup</span>' +
       '<div class="bstat ' + (isDirty() ? "dirty" : "clean") + '">' +
         '<i class="dot" style="background:' + (isDirty() ? "var(--warn)" : "var(--ok)") + '"></i>' +
         '<span>' + (isDirty() ? "Unsaved changes &middot; " : "Up to date &middot; ") + sinceBackup() + '</span></div>' +
@@ -1188,6 +1391,31 @@ function openData(){
       '<button class="danger" id="resetBtn">Erase everything and reload the starter list</button></div>';
 
   const body = $("#sheetBody");
+  const q = id => body.querySelector(id);
+
+  if(q("#syncOn")) q("#syncOn").onclick = async () => {
+    const owner = q("#syOwner").value.trim().replace(/^@/, "");
+    const repo  = q("#syRepo").value.trim();
+    const tok   = q("#syTok").value.trim();
+    if(!owner || !repo) return toast("Enter your username and repo name");
+    if(!tok) return toast("Paste an access token");
+    const c = syncCfg();
+    Object.assign(c, {on:true, owner, repo, sha:null, err:null});
+    setToken(tok);
+    saveLocal();
+    toast("Connecting…");
+    await syncBoot();
+    openData();
+    toast(syncCfg().err ? syncCfg().err : "Sync is on", syncCfg().err ? 4000 : 2000);
+  };
+  if(q("#syncNow")) q("#syncNow").onclick = () => runSync(false);
+  if(q("#syncOff")) q("#syncOff").onclick = () => {
+    if(!confirm("Turn off sync? The file already on GitHub is kept, and this device keeps its own copy.")) return;
+    Object.assign(syncCfg(), {on:false, sha:null, at:null, err:null});
+    setToken("");
+    saveLocal(); openData(); render(); toast("Sync off");
+  };
+
   body.querySelector("#expBtn").onclick = doExport;
   body.querySelector("#impBtn").onclick = () => $("#importFile").click();
   body.querySelector("#addSrc").onclick = () => {
@@ -1221,10 +1449,20 @@ function markBackedUp(){
   if($("#sheet").classList.contains("on") && !UI.billId) openData();
 }
 async function doExport(){
-  const stamp = new Date();
-  const name = "bill-ledger-" + iso(stamp) + "-" +
-               pad(stamp.getHours()) + pad(stamp.getMinutes()) + ".json";
-  const data = JSON.stringify({...S, exportedAt:stamp.toISOString()}, null, 2);
+  const name = "bill-ledger.json";     // stable name so Files can replace the old one
+  const data = payload();
+  // Share sheet first on iOS: it's the only route that offers "Save to Files"
+  // onto an existing file rather than piling up bill-ledger 2.json, 3.json…
+  try{
+    const file = new File([data], name, {type:"application/json"});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:"Bill Ledger backup"});
+      markBackedUp(); return toast("Shared — choose Save to Files", 3200);
+    }
+  }catch(err){
+    if(err && err.name === "AbortError") return;   // user dismissed the sheet
+    /* otherwise fall through to the download paths */
+  }
   if(window.claude && window.claude.downloads){
     try{
       await window.claude.downloads.save({filename:name, data});
@@ -1335,8 +1573,9 @@ $("#themeBtn").onclick = () => {
 };
 
 applyTheme();
-save();      // persist the starter list on first open
+saveLocal();   // persist the starter list on first open
 render();
+syncBoot();    // no-op unless GitHub sync is switched on
 })();
 </script>
 
