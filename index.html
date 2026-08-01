@@ -687,6 +687,73 @@ function maybeNudge(){
   toast("Unsaved changes — tap the database icon to back up to iCloud", 4200);
 }
 
+/* ── sanitising the trust boundary ──────────────────────────────────
+   Anything arriving from an imported file or the synced repo is treated
+   as untrusted: every field is coerced to its expected type and shape
+   before it can reach the DOM. Escaping on output is the second layer;
+   this is the first.                                                   */
+const S_FREQ = Object.keys(FREQ);
+// strip control characters only — spaces, hyphens and ₹ must survive
+const sStr  = (v, max) => String(v == null ? "" : v)
+  .replace(/[\u0000-\u001F\u007F]/g, "").slice(0, max);
+const sNum  = (v, d) => { const n = Number(v); return Number.isFinite(n) ? n : d; };
+const sInt  = (v, lo, hi, d) => Math.min(hi, Math.max(lo, Math.round(sNum(v, d))));
+const sId   = v => String(v == null ? "" : v).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 40);
+const sHex  = v => /^#[0-9a-fA-F]{6}$/.test(String(v)) ? String(v) : "#5C6670";
+const sDate = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v)) ? String(v) : todayISO;
+const sPeriod = v => /^\d{4}-\d{2}$/.test(String(v)) ? String(v)
+                   : periodKey(new Date().getFullYear(), new Date().getMonth());
+
+function sanitize(d){
+  if(!d || typeof d !== "object") throw new Error("shape");
+  let sources = (Array.isArray(d.sources) ? d.sources : []).slice(0, 60)
+    .map(s => ({id:sId(s && s.id), name:sStr(s && s.name, 40) || "Account", color:sHex(s && s.color)}))
+    .filter(s => s.id);
+  if(!sources.length) sources = [{id:"account", name:"Account", color:"#5C6670"}];
+  const srcIds = new Set(sources.map(s => s.id));
+  const fallbackSrc = sources[0].id;
+
+  const bills = (Array.isArray(d.bills) ? d.bills : []).slice(0, 600).map(b => b && {
+    id:       sId(b.id),
+    name:     sStr(b.name, 80),
+    amount:   Math.max(0, sNum(b.amount, 0)),
+    currency: b.currency === "INR" ? "INR" : "USD",
+    sourceId: srcIds.has(sId(b.sourceId)) ? sId(b.sourceId) : fallbackSrc,
+    dueDay:   sInt(b.dueDay, 1, 31, 1),
+    freq:     S_FREQ.includes(b.freq) ? b.freq : "monthly",
+    anchorY:  sInt(b.anchorY, 1970, 2999, 2026),
+    anchorM:  sInt(b.anchorM, 0, 11, 0),
+    endYear:  b.endYear == null || b.endYear === "" ? null : sInt(b.endYear, 1970, 2999, 2999),
+    note:     sStr(b.note, 120),
+    archived: !!b.archived
+  }).filter(b => b && b.id);
+  const billIds = new Set(bills.map(b => b.id));
+
+  const payments = (Array.isArray(d.payments) ? d.payments : []).slice(0, 40000)
+    .filter(p => p && billIds.has(sId(p.billId)))
+    .map(p => ({
+      id:       sId(p.id) || uid(),
+      billId:   sId(p.billId),
+      period:   sPeriod(p.period),
+      status:   p.status === "skipped" ? "skipped" : "paid",
+      date:     sDate(p.date),
+      amount:   Math.max(0, sNum(p.amount, 0)),
+      sourceId: srcIds.has(sId(p.sourceId)) ? sId(p.sourceId) : fallbackSrc,
+      note:     sStr(p.note, 120),
+      loggedAt: sStr(p.loggedAt, 40),
+      updatedAt:sStr(p.updatedAt, 40)
+    }));
+
+  return {
+    version:1, sources, bills, payments,
+    theme:      d.theme === "dark" || d.theme === "light" ? d.theme : null,
+    viewMode:   d.viewMode === "tiles" ? "tiles" : "list",
+    startPeriod:sPeriod(d.startPeriod),
+    updatedAt:  sNum(d.updatedAt, Date.now()),
+    exportedAt: sStr(d.exportedAt, 40)
+  };
+}
+
 /* ── icons ──────────────────────────────────────────────────────── */
 const I = {
   check:'<svg viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></svg>',
@@ -731,7 +798,7 @@ function summaryHTML(list){
       .sort((a,b) => b[1] - a[1])
       .map(([sid,amt]) => {
         const s = srcOf(sid);
-        return '<span class="src-tot"><i class="dot" style="background:' + s.color + '"></i>' +
+        return '<span class="src-tot"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
                esc(s.name) + ' <b>' + money(amt, cur) + '</b></span>';
       }).join("");
     return '<div class="tot-row">' +
@@ -754,7 +821,7 @@ function filtersHTML(){
   const c = curs.map(([v,l]) =>
     '<button class="chip" data-f="cur" data-v="' + v + '" aria-pressed="' + (UI.cur===v) + '">' + l + '</button>').join("");
   const s = S.sources.map(x =>
-    '<button class="chip" data-f="src" data-v="' + x.id + '" aria-pressed="' + (UI.src===x.id) + '">' +
+    '<button class="chip" data-f="src" data-v="' + esc(x.id) + '" aria-pressed="' + (UI.src===x.id) + '">' +
     '<i class="dot" style="background:' + x.color + '"></i>' + esc(x.name) + '</button>').join("");
   const clear = UI.src !== "all"
     ? '<button class="chip" data-f="src" data-v="all" aria-pressed="false">Clear source</button>' : "";
@@ -791,10 +858,10 @@ function tilesHTML(list){
     if(st === "today")   stat = '<span class="tile-stat" style="color:var(--warn)">Due today</span>';
     if(st === "soon")    stat = '<span class="tile-stat" style="color:var(--warn)">Due ' + MON3[UI.m] + ' ' + day + '</span>';
     return '<div class="tile" data-state="' + st + '">' +
-      '<button class="tile-check" data-tick="' + b.id + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
+      '<button class="tile-check" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
         '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
-      '<button data-open="' + b.id + '" style="display:flex;flex-direction:column;align-items:stretch;flex:1;text-align:left;min-width:0">' +
-        '<span class="tile-top"><i class="dot" style="background:' + s.color + '"></i>' +
+      '<button data-open="' + esc(b.id) + '" style="display:flex;flex-direction:column;align-items:stretch;flex:1;text-align:left;min-width:0">' +
+        '<span class="tile-top"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
           '<span class="tile-src">' + esc(s.name) + '</span></span>' +
         '<span class="tile-name">' + esc(b.name) + '</span>' +
         '<span class="tile-amt num">' + (amt ? money(amt, b.currency) : "—") + '</span>' +
@@ -844,11 +911,11 @@ function ledgerHTML(){
       if(st === "today")   stat = '<span class="stat today">Due today</span>';
       if(st === "soon")    stat = '<span class="stat soon">Due soon</span>';
       out += '<div class="row" data-state="' + st + '">' +
-        '<button class="tick" data-tick="' + b.id + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
+        '<button class="tick" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
           '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
-        '<button class="body" data-open="' + b.id + '">' +
+        '<button class="body" data-open="' + esc(b.id) + '">' +
           '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
-            '<span class="meta"><i class="dot" style="background:' + s.color + '"></i>' + esc(s.name) +
+            '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
             (b.freq !== "monthly" ? '<span class="sep">·</span><span class="freq-tag">' + FREQ[b.freq].label + '</span>' : '') +
             (b.note ? '<span class="sep">·</span>' + esc(b.note) : '') +
             '</span></span>' +
@@ -900,10 +967,10 @@ function historyHTML(){
     for(const p of items){
       const b = billOf(p.billId), s = srcOf(p.sourceId);
       const [, , dd] = p.date.split("-");
-      out += '<button class="hrow" data-open="' + b.id + '" data-period="' + p.period + '">' +
+      out += '<button class="hrow" data-open="' + esc(b.id) + '" data-period="' + esc(p.period) + '">' +
         '<span class="hdate"><b class="num">' + Number(dd) + '</b>' + MON3[m-1] + '</span>' +
         '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
-          '<span class="meta"><i class="dot" style="background:' + s.color + '"></i>' + esc(s.name) +
+          '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
           '<span class="sep">·</span>' + (p.status === "paid" ? "Paid" : "Skipped") +
           (p.note ? '<span class="sep">·</span>' + esc(p.note) : '') + '</span></span>' +
         '<span class="a num ' + (p.status === "paid" ? "" : "sk") + '">' +
@@ -1043,18 +1110,22 @@ async function syncPush(){
   c.err = null;
   S.lastBackup = {at:c.at, sig:signature()};
 }
+/** After the data underneath changes, drop filters that no longer resolve —
+    otherwise the month reads "Nothing due" for no visible reason. */
+function resetStaleFilters(){
+  if(UI.src !== "all" && !S.sources.some(s => s.id === UI.src)) UI.src = "all";
+  if(UI.cur !== "all" && !S.bills.some(b => b.currency === UI.cur)) UI.cur = "all";
+}
+
 function adopt(d){
+  const c = sanitize(d);              // remote data is untrusted
   Object.assign(S, {
     version:1,
-    sources: d.sources || S.sources,
-    bills:   d.bills   || S.bills,
-    payments:d.payments|| [],
-    startPeriod: d.startPeriod || S.startPeriod,
-    viewMode:    d.viewMode    || S.viewMode,
-    theme:       d.theme ?? S.theme,
-    updatedAt:   d.updatedAt   || Date.now(),
-    lastBackup:  d.lastBackup  || S.lastBackup
+    sources: c.sources, bills: c.bills, payments: c.payments,
+    startPeriod: c.startPeriod, viewMode: c.viewMode,
+    theme: c.theme, updatedAt: c.updatedAt
   });
+  resetStaleFilters();
   applyTheme();
 }
 
@@ -1133,10 +1204,10 @@ function renderSheet(){
   $("#sheetTitle").textContent = b.name || "New bill";
 
   const srcOptions = S.sources.map(s =>
-    '<option value="' + s.id + '"' + (s.id === (p ? p.sourceId : b.sourceId) ? " selected" : "") + '>' +
+    '<option value="' + esc(s.id) + '"' + (s.id === (p ? p.sourceId : b.sourceId) ? " selected" : "") + '>' +
     esc(s.name) + '</option>').join("");
   const srcOptionsBill = S.sources.map(s =>
-    '<option value="' + s.id + '"' + (s.id === b.sourceId ? " selected" : "") + '>' + esc(s.name) + '</option>').join("");
+    '<option value="' + esc(s.id) + '"' + (s.id === b.sourceId ? " selected" : "") + '>' + esc(s.name) + '</option>').join("");
   const freqOptions = Object.entries(FREQ).map(([k,v]) =>
     '<option value="' + k + '"' + (k === b.freq ? " selected" : "") + '>' + v.label + '</option>').join("");
   const dayOptions = Array.from({length:31}, (_,i) =>
@@ -1150,14 +1221,14 @@ function renderSheet(){
   const spark = paid.length >= 2
     ? '<div class="spark">' + paid.map(x =>
         '<i style="height:' + Math.max(8, (x.amount / max) * 100) + '%" title="' +
-        x.period + ' · ' + money(x.amount, b.currency) + '"></i>').join("") + '</div>' +
+        esc(x.period) + ' · ' + money(x.amount, b.currency) + '"></i>').join("") + '</div>' +
       '<div class="spark-note">Last ' + paid.length + ' payments · high ' + money(max, b.currency) + '</div>'
     : "";
   const histRows = hist.length
     ? '<div class="mini">' + hist.slice(0,24).map(x => {
         const s = srcOf(x.sourceId);
-        return '<div class="mini-row"><span class="d num">' + shortDate(x.date) + " '" + x.date.slice(2,4) +
-          '</span><i class="dot" style="background:' + s.color + '"></i><span>' + esc(s.name) + '</span>' +
+        return '<div class="mini-row"><span class="d num">' + shortDate(x.date) + " '" + esc(x.date.slice(2,4)) +
+          '</span><i class="dot" style="background:' + esc(s.color) + '"></i><span>' + esc(s.name) + '</span>' +
           '<span class="a num ' + (x.status === "paid" ? "" : "sk") + '">' +
           (x.status === "paid" ? money(x.amount, b.currency) : "skipped") + '</span></div>';
       }).join("") + '</div>'
@@ -1175,8 +1246,8 @@ function renderSheet(){
       (p ? '<div class="fields">' +
         '<div class="two">' +
           '<div class="field"><label for="pDate">Date paid</label>' +
-            '<input type="date" id="pDate" value="' + p.date + '"></div>' +
-          '<div class="field"><label for="pAmt">Amount (' + b.currency + ')</label>' +
+            '<input type="date" id="pDate" value="' + esc(p.date) + '"></div>' +
+          '<div class="field"><label for="pAmt">Amount (' + esc(b.currency) + ')</label>' +
             '<input type="number" inputmode="decimal" step="0.01" id="pAmt" value="' + (p.amount || 0) + '"></div>' +
         '</div>' +
         '<div class="field"><label for="pSrc">Paid from</label>' +
@@ -1209,7 +1280,7 @@ function renderSheet(){
         (b.freq === "monthly" ? "" :
         '<div class="two">' +
           '<div class="field"><label for="bAnchor">First due</label>' +
-            '<input type="month" id="bAnchor" value="' + b.anchorY + '-' + pad(b.anchorM+1) + '"></div>' +
+            '<input type="month" id="bAnchor" value="' + esc(b.anchorY + '-' + pad(b.anchorM+1)) + '"></div>' +
           '<div class="field"><label for="bEnd">Last year</label>' +
             '<input type="number" inputmode="numeric" id="bEnd" placeholder="never" value="' + (b.endYear || "") + '"></div>' +
         '</div>' +
@@ -1365,11 +1436,11 @@ function openData(){
     '</div>' +
     '<div class="sec"><span class="eyebrow">Payment sources</span>' +
       '<div class="mini">' + S.sources.map(s =>
-        '<div class="mini-row"><i class="dot" style="background:' + s.color + '"></i>' +
+        '<div class="mini-row"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
         '<span>' + esc(s.name) + '</span>' +
         '<span class="a num" style="font-weight:500;color:var(--muted)">' +
           S.bills.filter(b => !b.archived && b.sourceId === s.id).length + ' bills</span>' +
-        '<button class="icon-btn" data-delsrc="' + s.id + '" aria-label="Remove ' + esc(s.name) + '" style="width:30px;height:30px">' +
+        '<button class="icon-btn" data-delsrc="' + esc(s.id) + '" aria-label="Remove ' + esc(s.name) + '" style="width:30px;height:30px">' +
           '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>').join("") +
       '</div>' +
       '<div class="fields"><div class="two">' +
@@ -1384,7 +1455,7 @@ function openData(){
       (S.bills.filter(b => b.archived).length
         ? '<div class="mini">' + S.bills.filter(b => b.archived).map(b =>
             '<div class="mini-row"><span>' + esc(b.name) + '</span>' +
-            '<button class="a" data-unarch="' + b.id + '" style="color:var(--accent);font-weight:600">Restore</button></div>').join("") + '</div>'
+            '<button class="a" data-unarch="' + esc(b.id) + '" style="color:var(--accent);font-weight:600">Restore</button></div>').join("") + '</div>'
         : '<div class="hint">None.</div>') +
     '</div>' +
     '<div class="sec"><span class="eyebrow">Reset</span>' +
@@ -1491,17 +1562,18 @@ $("#importFile").onchange = e => {
   const r = new FileReader();
   r.onload = () => {
     try{
-      const d = JSON.parse(r.result);
-      if(!Array.isArray(d.bills) || !Array.isArray(d.sources)) throw new Error("shape");
+      const raw = JSON.parse(r.result);
+      if(!Array.isArray(raw.bills) || !Array.isArray(raw.sources)) throw new Error("shape");
+      const d = sanitize(raw);          // file is untrusted, whoever sent it
       const when = d.exportedAt ? "\n\nBacked up " + new Date(d.exportedAt).toLocaleString() : "";
       if(!confirm("Replace everything on this device with " + d.bills.length + " bills and " +
-        (d.payments || []).length + " payments from this file?" + when)) return;
+        d.payments.length + " payments from this file?" + when)) return;
       Object.assign(S, {
-        version:1, sources:d.sources, bills:d.bills, payments:d.payments || [],
-        startPeriod:d.startPeriod || S.startPeriod,
-        viewMode:d.viewMode || S.viewMode, theme:d.theme ?? S.theme
+        version:1, sources:d.sources, bills:d.bills, payments:d.payments,
+        startPeriod:d.startPeriod, viewMode:d.viewMode, theme:d.theme
       });
       S.lastBackup = {at:d.exportedAt || new Date().toISOString(), sig:signature()};
+      resetStaleFilters();
       applyTheme(); save(); closeSheet(); toast("Restored from backup");
     }catch(err){ toast("That file isn't a Bill Ledger backup"); }
   };
