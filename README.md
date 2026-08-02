@@ -33,6 +33,31 @@ restoring your own backup file on your own phone.
 > Safari's. Set it up in whichever one you plan to use, or restore the same backup
 > into both.
 
+## Automatic sync (optional)
+
+Connect a **private** GitHub repo and the ledger saves itself back to one file on
+every change — no manual backups, and it follows you between devices. Each save is a
+commit, so you get version history for free.
+
+Create the token here — this link goes straight to the right page:
+
+<https://github.com/settings/personal-access-tokens/new>
+
+Give it an expiry, set **Repository access → Only select repositories** to your data
+repo, and **Permissions → Repository permissions → Contents: Read and write**. Nothing
+else. That token cannot read your other repos or act on your account, and you can
+revoke it at any time.
+
+> Looking for it by menu? **Developer settings** is at the very bottom of the sidebar
+> under your *profile* settings — it does not appear under a repository's settings,
+> and the GitHub **mobile app** doesn't show it at all. Use the link above in a browser.
+
+The token is stored only in your browser, under its own key so it can never end up
+inside an exported or synced file, and it is sent only to `api.github.com`.
+
+Sync needs the GitHub Pages version — it makes a cross-origin request, which the
+claude.ai artifact build blocks.
+
 ## Backups
 
 The database icon shows an amber dot whenever there are changes you haven't backed
