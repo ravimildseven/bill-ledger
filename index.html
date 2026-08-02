@@ -1024,6 +1024,102 @@ function setStatus(billId, pk, status){
   save();
 }
 
+/* ── calendar reminders ─────────────────────────────────────────────
+   One recurring all-day event per bill, with an alarm. iOS Calendar then
+   does the reminding — no service worker, no push server, and it rides
+   iCloud to every device on its own.                                   */
+const icsEsc = s => String(s == null ? "" : s)
+  .replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\r?\n/g, "\\n");
+/** RFC 5545 caps lines at 75 octets; continuations start with one space. */
+function icsFold(line){
+  const bytes = new TextEncoder().encode(line);
+  if(bytes.length <= 73) return line;
+  const out = [];
+  let cur = "";
+  for(const ch of line){                       // iterate code points, never split one
+    if(new TextEncoder().encode(cur + ch).length > 72){ out.push(cur); cur = " " + ch; }
+    else cur += ch;
+  }
+  if(cur) out.push(cur);
+  return out.join("\r\n");
+}
+function icsRule(b){
+  const d = b.dueDay;
+  if(b.freq === "once")      return null;
+  if(b.freq === "yearly")    return "FREQ=YEARLY;BYMONTH=" + (b.anchorM + 1) + ";BYMONTHDAY=" + d;
+  const step = {monthly:1, quarterly:3, half:6}[b.freq] || 1;
+  return "FREQ=MONTHLY" + (step > 1 ? ";INTERVAL=" + step : "") + ";BYMONTHDAY=" + d;
+}
+function buildICS(daysBefore){
+  const now = new Date();
+  const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  // alarm fires at 09:00 local, `daysBefore` days ahead of the all-day start
+  const offsetH = daysBefore * 24 - 9;
+  const trigger = offsetH === 0 ? "PT0S" : (offsetH > 0 ? "-PT" + offsetH + "H" : "PT" + (-offsetH) + "H");
+
+  const L = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Bill Ledger//EN",
+             "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
+             "X-WR-CALNAME:Bill Ledger", "X-WR-TIMEZONE:" + (Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC")];
+
+  const bills = S.bills.filter(b => !b.archived);
+  for(const b of bills){
+    const first = dueDate(b, b.anchorY, b.anchorM);
+    const dt = first.getFullYear() + pad(first.getMonth() + 1) + pad(first.getDate());
+    const next = new Date(first); next.setDate(next.getDate() + 1);
+    const dtEnd = next.getFullYear() + pad(next.getMonth() + 1) + pad(next.getDate());
+    const src = srcOf(b.sourceId).name;
+    const amt = b.amount ? money(b.amount, b.currency) : "amount varies";
+    const rule = icsRule(b);
+    // RFC 5545: DTSTART is a DATE value here, so UNTIL must be a DATE too —
+    // a date-time UNTIL against a DATE start is rejected by strict parsers.
+    const until = b.endYear ? ";UNTIL=" + b.endYear + "1231" : "";
+
+    L.push("BEGIN:VEVENT");
+    L.push("UID:bill-" + b.id + "@bill-ledger");
+    L.push("DTSTAMP:" + stamp);
+    L.push("DTSTART;VALUE=DATE:" + dt);
+    L.push("DTEND;VALUE=DATE:" + dtEnd);
+    if(rule) L.push("RRULE:" + rule + until);
+    L.push(icsFold("SUMMARY:" + icsEsc(b.name + " — " + amt)));
+    L.push(icsFold("DESCRIPTION:" + icsEsc(
+      "Pay from " + src + "." + (b.note ? " " + b.note : "") +
+      "\n" + FREQ[b.freq].label + " · added by Bill Ledger")));
+    L.push("TRANSP:TRANSPARENT");
+    L.push("BEGIN:VALARM");
+    L.push("ACTION:DISPLAY");
+    L.push(icsFold("DESCRIPTION:" + icsEsc(b.name + " — " + amt + " from " + src)));
+    L.push("TRIGGER;RELATED=START:" + trigger);
+    L.push("END:VALARM");
+    L.push("END:VEVENT");
+  }
+  L.push("END:VCALENDAR");
+  return {text: L.join("\r\n") + "\r\n", count: bills.length};
+}
+async function doCalendar(){
+  const sel = $("#remWhen");
+  const daysBefore = sel ? parseInt(sel.value, 10) : 1;
+  const {text, count} = buildICS(daysBefore);
+  if(!count) return toast("No bills to remind you about yet");
+  const name = "bill-ledger-reminders.ics";
+  const file = new File([text], name, {type:"text/calendar"});
+  try{
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:"Bill Ledger reminders"});
+      return toast("Choose Calendar to add " + count + " reminders", 3600);
+    }
+  }catch(err){
+    if(err && err.name === "AbortError") return;
+  }
+  try{
+    const url = URL.createObjectURL(new Blob([text], {type:"text/calendar"}));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.rel = "noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast(count + " reminders saved — open the file to add them", 3600);
+  }catch(e){ toast("Could not create the calendar file here"); }
+}
+
 /* ── GitHub sync ────────────────────────────────────────────────────
    Writes the ledger back to one file in a PRIVATE repo on every change.
    The token is held under its own key, never inside S, so it can never
@@ -1425,6 +1521,19 @@ function openData(){
   $("#sheetTitle").textContent = "Data & sources";
   const counts = S.payments.length;
   $("#sheetBody").innerHTML =
+    '<div class="sec"><span class="eyebrow">Reminders</span>' +
+      '<div class="hint" style="margin-bottom:11px">Add every bill to your calendar as a repeating event with an alert, so your phone reminds you. Recurring bills repeat on their own — you only need to do this again if you add or change bills.</div>' +
+      '<div class="field"><label for="remWhen">Alert me at 9am</label>' +
+        '<select id="remWhen">' +
+          '<option value="0">On the due date</option>' +
+          '<option value="1" selected>1 day before</option>' +
+          '<option value="3">3 days before</option>' +
+          '<option value="7">1 week before</option>' +
+        '</select></div>' +
+      '<button class="ghost" id="calBtn" style="margin-top:10px">Add ' +
+        S.bills.filter(b => !b.archived).length + ' reminders to Calendar</button>' +
+      '<div class="hint" style="margin-top:9px">Adding them again replaces the old ones rather than duplicating, as long as you keep them in the same calendar.</div>' +
+    '</div>' +
     syncSectionHTML() +
     '<div class="sec"><span class="eyebrow">Manual backup</span>' +
       '<div class="bstat ' + (isDirty() ? "dirty" : "clean") + '">' +
@@ -1494,6 +1603,7 @@ function openData(){
     saveLocal(); openData(); render(); toast("Sync off");
   };
 
+  if(q("#calBtn")) q("#calBtn").onclick = doCalendar;
   body.querySelector("#expBtn").onclick = doExport;
   body.querySelector("#impBtn").onclick = () => $("#importFile").click();
   body.querySelector("#addSrc").onclick = () => {

@@ -33,6 +33,17 @@ restoring your own backup file on your own phone.
 > Safari's. Set it up in whichever one you plan to use, or restore the same backup
 > into both.
 
+## Reminders
+
+The data panel can add every bill to your calendar as a repeating event with an
+alert — 9am on the due date, or 1, 3 or 7 days before. Recurring bills repeat on
+their own, so you only redo this when you add or change a bill.
+
+It generates a standard `.ics` file, so the OS does the reminding: no notification
+permissions, no service worker, and it rides iCloud to your other devices. Events
+carry stable UIDs, so re-adding them updates the existing entries rather than
+duplicating, provided you keep them in the same calendar.
+
 ## Automatic sync (optional)
 
 Connect a **private** GitHub repo and the ledger saves itself back to one file on
