@@ -1405,11 +1405,13 @@ function syncSectionHTML(){
         'github.com/settings/personal-access-tokens/new</a></p>' +
       '<ol>' +
         '<li>First make sure you have a <b>private</b> empty repo to sync into — <code>bill-ledger-data</code></li>' +
-        '<li>On that page, give the token a name and an expiry</li>' +
-        '<li>Under <b>Repository access</b> pick <b>Only select repositories</b>, and choose just that one repo</li>' +
-        '<li>Under <b>Permissions → Repository permissions</b>, set <b>Contents</b> to <b>Read and write</b>. Leave everything else alone</li>' +
+        '<li>On that page, give the token a name and an <b>expiry</b></li>' +
+        '<li><b>Repository access</b> → <b>Only select repositories</b> → choose that one repo</li>' +
+        '<li>Under <b>Permissions</b>, click <b>Repository permissions</b> to <b>expand it</b> — it starts collapsed, which is why the setting looks missing</li>' +
+        '<li>The list is alphabetical. Scroll to <b>Contents</b>, and change the dropdown <b>on its right</b> from <i>No access</i> to <b>Read and write</b>. Leave every other row alone</li>' +
         '<li><b>Generate token</b>, copy it, and paste it above</li>' +
       '</ol>' +
+      '<p><b>No “Read and write” anywhere?</b> You’re most likely on the <i>classic</i> token page, which shows tick-boxes (<code>repo</code>, <code>workflow</code>, <code>gist</code>) instead of dropdowns. Use the link above for the fine-grained page. A classic token with <code>repo</code> ticked does also work here — but it grants access to <i>all</i> your repositories rather than just this one.</p>' +
       '<p><b>Can’t find it by menu?</b> Developer settings lives at the very bottom of the sidebar under your <i>profile</i> settings — not under a repository’s settings — and the GitHub <i>mobile app</i> doesn’t show it at all. Use the link above in Safari instead.</p>' +
       '<p>That token can only touch that one repo’s files — it cannot read your other repos or act on your account. Revoke it any time from the same page.</p>' +
       '<p>Because the repo is private, the data is genuinely protected by GitHub auth, and every change becomes a commit, so you get a full version history for free.</p>' +

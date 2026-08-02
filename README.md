@@ -43,10 +43,18 @@ Create the token here — this link goes straight to the right page:
 
 <https://github.com/settings/personal-access-tokens/new>
 
-Give it an expiry, set **Repository access → Only select repositories** to your data
-repo, and **Permissions → Repository permissions → Contents: Read and write**. Nothing
-else. That token cannot read your other repos or act on your account, and you can
-revoke it at any time.
+Give it an expiry and set **Repository access → Only select repositories** to your
+data repo. Then under **Permissions**, click **Repository permissions** to *expand
+it* — it starts collapsed, which makes the setting look missing. The list is
+alphabetical: scroll to **Contents** and change the dropdown on its right from *No
+access* to **Read and write**. Leave every other row alone.
+
+That token cannot read your other repos or act on your account, and you can revoke it
+at any time.
+
+> Seeing tick-boxes (`repo`, `workflow`, `gist`) instead of dropdowns? That's the
+> *classic* token page. Use the link above for the fine-grained one. A classic token
+> with `repo` ticked also works, but it grants access to **all** your repositories.
 
 > Looking for it by menu? **Developer settings** is at the very bottom of the sidebar
 > under your *profile* settings — it does not appear under a repository's settings,
