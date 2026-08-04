@@ -99,11 +99,11 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 }
 .bar-top{display:flex; align-items:center; gap:10px; min-height:38px}
 .brand{
-  font-family:var(--f-display); font-size:19px; font-weight:600;
+  margin:0; font-family:var(--f-display); font-size:19px; font-weight:600;
   letter-spacing:-.015em; margin-right:auto;
 }
 .icon-btn{
-  position:relative; width:38px; height:38px; display:grid; place-items:center;
+  position:relative; width:44px; height:44px; display:grid; place-items:center;
   border-radius:10px; color:var(--ink-2);
 }
 .icon-btn.unsaved::after{
@@ -115,7 +115,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
   stroke-linecap:round; stroke-linejoin:round}
 
 .month-nav{display:flex; align-items:center; gap:6px; padding:2px 0 10px}
-.month-nav .icon-btn{width:36px; height:36px}
+.month-nav .icon-btn{width:44px; height:44px}
 .month-label{
   flex:1; text-align:center; font-family:var(--f-display);
   font-size:20px; font-weight:600; letter-spacing:-.01em;
@@ -131,7 +131,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 
 .tabs{display:flex; gap:2px; border-top:1px solid var(--line-soft)}
 .tab{
-  flex:1; padding:11px 4px 10px; font-size:13.5px; font-weight:600;
+  flex:1; padding:12px 4px 11px; font-size:13.5px; font-weight:600;
   color:var(--muted); border-bottom:2px solid transparent; margin-bottom:-1px;
 }
 .tab[aria-selected="true"]{color:var(--ink); border-bottom-color:var(--accent)}
@@ -139,13 +139,24 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 /* ── summary ────────────────────────────────────────────────────── */
 .summary{
   background:var(--surface); border-bottom:1px solid var(--line);
-  padding:14px 16px 16px; display:flex; flex-direction:column; gap:14px;
+  padding:11px 16px 10px; display:flex; flex-direction:column; gap:10px;
 }
-.tot-row{display:flex; flex-direction:column; gap:7px}
+.tot-row{display:flex; flex-direction:column; gap:5px}
 .tot-head{display:flex; align-items:baseline; gap:8px}
-.tot-cur{font-size:12px; font-weight:700; letter-spacing:.05em; color:var(--muted)}
-.tot-amt{font-size:23px; font-weight:600; letter-spacing:-.02em; margin-left:auto}
-.tot-sub{font-size:12px; color:var(--muted)}
+.tot-cur{
+  font-size:11px; font-weight:650; letter-spacing:.09em; text-transform:uppercase;
+  color:var(--muted);
+}
+.tot-amt{font-size:25px; font-weight:600; letter-spacing:-.025em; margin-left:auto;
+  line-height:1.05}
+.tot-sub{font-size:11.5px; color:var(--muted)}
+.srcfold{border-top:1px solid var(--line-soft); padding-top:8px}
+.srcfold summary{
+  display:flex; align-items:center; gap:8px; cursor:pointer; list-style:none;
+  font-size:11.5px; color:var(--muted); padding:3px 0; min-height:44px;
+}
+.srcfold summary::-webkit-details-marker{display:none}
+.srcfold .by-src{margin-top:9px}
 .meter{height:5px; border-radius:99px; background:var(--line-soft); overflow:hidden; display:flex}
 .meter i{display:block; height:100%; background:var(--ok); transition:width .3s ease}
 .meter i.skip{background:var(--muted); opacity:.5}
@@ -162,11 +173,16 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 }
 
 /* ── view toggle ────────────────────────────────────────────────── */
-.viewbar{display:flex; align-items:center; gap:10px; padding:12px 16px 0}
-.viewbar .eyebrow{margin-right:auto}
+.controls{display:flex; align-items:center; gap:8px; padding:9px 16px 9px 0}
+.controls .filters{flex:1; min-width:0; padding:0 0 0 16px}
 .vtog{display:flex; gap:2px; padding:2px; background:var(--surface-2);
   border:1px solid var(--line); border-radius:9px}
-.vtog button{padding:6px 9px; border-radius:7px; color:var(--muted); display:grid; place-items:center}
+/* Keep these visually compact but give the thumb a full 44px to land on. */
+.vtog button{position:relative; padding:9px 10px; border-radius:7px; color:var(--muted);
+  display:grid; place-items:center}
+.vtog button::after{content:""; position:absolute; inset:-5px -4px}
+.sheet-done{position:relative}
+.sheet-done::after{content:""; position:absolute; inset:-10px -6px}
 .vtog button[aria-pressed="true"]{background:var(--surface); color:var(--ink);
   box-shadow:0 1px 2px rgba(0,0,0,.09)}
 .vtog svg{width:16px; height:16px; fill:none; stroke:currentColor; stroke-width:1.8;
@@ -222,7 +238,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .filters::-webkit-scrollbar{display:none}
 .chip{
   flex:none; display:inline-flex; align-items:center; gap:6px;
-  padding:9px 13px; border-radius:99px; border:1px solid var(--line);
+  padding:12px 13px; border-radius:99px; border:1px solid var(--line);
   background:var(--surface); font-size:13px; font-weight:550; color:var(--ink-2);
   white-space:nowrap;
 }
@@ -238,6 +254,16 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .group-head .eyebrow{white-space:nowrap}
 .group-head .rule{flex:1; height:1px; background:var(--line)}
 .group-head .cnt{font-size:11px; color:var(--muted); font-family:var(--f-num)}
+.group-head .eyebrow em{
+  font-style:normal; margin-left:7px; padding:2px 6px; border-radius:4px;
+  font-size:10px; letter-spacing:.06em;
+}
+.group[data-gstate="missed"] .eyebrow em{background:var(--bad-soft); color:var(--bad)}
+.group[data-gstate="today"]  .eyebrow em{background:var(--warn-soft); color:var(--warn)}
+.group[data-gstate="soon"]   .eyebrow em{background:var(--warn-soft); color:var(--warn)}
+/* a quiet edge marks each overdue row without shouting the word 13 times */
+.group[data-gstate="missed"] .row{box-shadow:inset 3px 0 0 var(--bad)}
+.group[data-gstate="today"]  .row{box-shadow:inset 3px 0 0 var(--warn)}
 .rows{background:var(--surface); border-block:1px solid var(--line)}
 
 .row{display:flex; align-items:stretch; gap:0; position:relative}
@@ -309,6 +335,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 }
 .fold[open] .chev{transform:rotate(-135deg) translate(-2px,-2px)}
 .fold .rows{border-top:0}
+.fold .tiles{padding-top:12px}
 .fold .row{opacity:.72}
 
 .allclear{
@@ -510,7 +537,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 <div class="shell">
   <header class="bar">
     <div class="bar-top">
-      <div class="brand">Bill Ledger</div>
+      <h1 class="brand">Bill Ledger</h1>
       <button class="icon-btn" id="themeBtn" aria-label="Switch theme">
         <svg viewBox="0 0 24 24"><path d="M12 3v1.5M12 19.5V21M3 12h1.5M19.5 12H21M5.6 5.6l1.1 1.1M17.3 17.3l1.1 1.1M18.4 5.6l-1.1 1.1M6.7 17.3l-1.1 1.1"/><circle cx="12" cy="12" r="3.8"/></svg>
       </button>
@@ -820,30 +847,45 @@ function summaryHTML(list){
   const order = ["USD","INR"].filter(c => groups[c]);
   if(!order.length) return "";
 
-  return '<div class="summary">' + order.map(cur => {
+  // One line per currency. The figure you actually came for is the outstanding
+  // total; everything else is secondary and sized that way. Per-source amounts
+  // sit behind a fold so they cost no vertical space until asked for.
+  const rows = order.map(cur => {
     const g = groups[cur];
     const donePct = g.n ? (g.paid / g.n) * 100 : 0;
     const skipPct = g.n ? (g.skip / g.n) * 100 : 0;
     const open = g.n - g.paid - g.skip;
-    const srcChips = Object.entries(g.src)
-      .sort((a,b) => b[1] - a[1])
-      .map(([sid,amt]) => {
-        const s = srcOf(sid);
-        return '<span class="src-tot"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
-               esc(s.name) + ' <b>' + money(amt, cur) + '</b></span>';
-      }).join("");
     return '<div class="tot-row">' +
-      '<div class="tot-head"><span class="tot-cur">' + cur + ' &middot; still to pay</span>' +
+      '<div class="tot-head">' +
+        '<span class="tot-cur">' + (cur === "INR" ? "India" : "US") + '</span>' +
         '<span class="tot-amt num">' + money(g.left, cur) + '</span></div>' +
-      '<div class="meter"><i style="width:' + donePct + '%"></i><i class="skip" style="width:' + skipPct + '%"></i></div>' +
-      '<div class="tot-sub">' + g.paid + ' of ' + g.n + ' cleared' +
-        (g.skip ? ' &middot; ' + g.skip + ' skipped' : '') +
-        ' &middot; ' + money(g.total, cur) + ' billed</div>' +
-      (open
-        ? '<div class="by-src">' + srcChips + '</div>'
-        : '<div class="all-clear">' + I.check + ' Nothing left for ' + cur + ' this month</div>') +
+      '<div class="meter"><i style="width:' + donePct + '%"></i>' +
+        '<i class="skip" style="width:' + skipPct + '%"></i></div>' +
+      '<div class="tot-sub">' + (open
+        ? open + ' left &middot; ' + g.paid + ' of ' + g.n + ' cleared'
+        : 'all ' + g.n + ' settled') + '</div>' +
     '</div>';
-  }).join("") + '</div>';
+  }).join("");
+
+  const allSrc = {};
+  for(const cur of order)
+    for(const [sid, amt] of Object.entries(groups[cur].src))
+      (allSrc[cur] || (allSrc[cur] = [])).push([sid, amt]);
+  const chips = order.flatMap(cur =>
+    (allSrc[cur] || []).sort((a,b) => b[1] - a[1]).map(([sid, amt]) => {
+      const s = srcOf(sid);
+      return '<span class="src-tot"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
+             esc(s.name) + ' <b>' + money(amt, cur) + '</b></span>';
+    })).join("");
+
+  return '<div class="summary">' + rows +
+    (chips
+      ? '<details class="srcfold"' + (S.srcOpen ? ' open' : '') + ' data-fold="src">' +
+          '<summary><span>What comes out of each account</span>' +
+          '<span class="chev" aria-hidden="true"></span></summary>' +
+          '<div class="by-src">' + chips + '</div></details>'
+      : '') +
+  '</div>';
 }
 
 /* ── render: filters ────────────────────────────────────────────── */
@@ -856,13 +898,13 @@ function filtersHTML(){
     '<i class="dot" style="background:' + x.color + '"></i>' + esc(x.name) + '</button>').join("");
   const clear = UI.src !== "all"
     ? '<button class="chip" data-f="src" data-v="all" aria-pressed="false">Clear source</button>' : "";
-  return '<div class="filters">' + c + s + clear + '</div>';
+  return '<div class="controls"><div class="filters">' + c + s + clear + '</div>' +
+    viewbarHTML() + '</div>';
 }
 
 /* ── render: view toggle ────────────────────────────────────────── */
 function viewbarHTML(n){
-  return '<div class="viewbar"><span class="eyebrow">' + n + ' bill' + (n===1?'':'s') + ' this month</span>' +
-    '<div class="vtog">' +
+  return '<div class="vtog">' +
       '<button data-mode="list" aria-pressed="' + (S.viewMode!=="tiles") + '" aria-label="List view">' +
         '<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>' +
       '<button data-mode="tiles" aria-pressed="' + (S.viewMode==="tiles") + '" aria-label="Tile view">' +
@@ -870,7 +912,7 @@ function viewbarHTML(n){
         '<rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/>' +
         '<rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/>' +
         '<rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></button>' +
-    '</div></div>';
+    '</div>';
 }
 
 /* ── render: tiles ──────────────────────────────────────────────── */
@@ -917,9 +959,6 @@ function ledgerHTML(){
     return out + '<div class="empty"><b>Nothing due</b>No bills fall in ' +
       MONTHS[UI.m] + ' ' + UI.y + ' with these filters.</div>';
   }
-  out += viewbarHTML(list.length);
-  if(S.viewMode === "tiles") return out + tilesHTML(list);
-
   const pk = periodKey(UI.y, UI.m);
   // Settled bills are done with — they belong out of the way, not padding
   // out a list you have to scroll past to find what still needs paying.
@@ -929,6 +968,13 @@ function ledgerHTML(){
     (st === "paid" || st === "skipped" ? settled : open).push(b);
   }
 
+  if(S.viewMode === "tiles"){
+    if(open.length) out += tilesHTML(open);
+    else out += allClearHTML(settled.length);
+    if(settled.length) out += foldHTML(settled, tilesHTML(settled));
+    return out;
+  }
+
   const byDay = new Map();
   for(const b of open){
     const d = Math.min(b.dueDay, daysIn(UI.y, UI.m));
@@ -936,27 +982,37 @@ function ledgerHTML(){
     byDay.get(d).push(b);
   }
   for(const [day, items] of [...byDay.entries()].sort((a,b) => a[0]-b[0])){
-    out += '<section class="group"><div class="group-head">' +
-      '<span class="eyebrow">' + MON3[UI.m] + ' ' + day + '</span>' +
+    // The whole group shares one due date, so its state belongs on the header
+    // once rather than repeated down every row.
+    const gs = stateOf(items[0], UI.y, UI.m);
+    const label = gs === "missed" ? "overdue" : gs === "today" ? "due today"
+                : gs === "soon"  ? "due soon" : "";
+    out += '<section class="group" data-gstate="' + gs + '"><div class="group-head">' +
+      '<span class="eyebrow">' + MON3[UI.m] + ' ' + day +
+        (label ? '<em>' + label + '</em>' : '') + '</span>' +
       '<span class="rule"></span><span class="cnt">' + items.length + '</span></div><div class="rows">' +
       items.map(b => rowHTML(b, pk)).join("") + '</div></section>';
   }
 
-  if(!open.length){
-    out += '<div class="allclear">' + I.check +
-      '<b>Everything is settled for ' + MONTHS[UI.m] + '</b>' +
-      '<span>' + settled.length + ' bill' + (settled.length === 1 ? '' : 's') + ' cleared or skipped</span></div>';
-  }
-  if(settled.length){
-    const paidN = settled.filter(b => stateOf(b, UI.y, UI.m) === "paid").length;
-    const skipN = settled.length - paidN;
-    out += '<details class="fold"' + (S.settledOpen ? ' open' : '') + ' data-fold="settled">' +
-      '<summary><span class="eyebrow">Settled</span>' +
-        '<span class="foldsum">' + paidN + ' paid' + (skipN ? ' · ' + skipN + ' skipped' : '') + '</span>' +
-        '<span class="chev" aria-hidden="true"></span></summary>' +
-      '<div class="rows">' + settled.map(b => rowHTML(b, pk)).join("") + '</div></details>';
-  }
+  if(!open.length) out += allClearHTML(settled.length);
+  if(settled.length)
+    out += foldHTML(settled, '<div class="rows">' + settled.map(b => rowHTML(b, pk)).join("") + '</div>');
   return out;
+}
+
+function allClearHTML(n){
+  return '<div class="allclear">' + I.check +
+    '<b>Everything is settled for ' + MONTHS[UI.m] + '</b>' +
+    '<span>' + n + ' bill' + (n === 1 ? '' : 's') + ' cleared or skipped</span></div>';
+}
+/** The settled fold, wrapping whichever layout the user is in. */
+function foldHTML(settled, inner){
+  const paidN = settled.filter(b => stateOf(b, UI.y, UI.m) === "paid").length;
+  const skipN = settled.length - paidN;
+  return '<details class="fold"' + (S.settledOpen ? ' open' : '') + ' data-fold="settled">' +
+    '<summary><span class="eyebrow">Settled</span>' +
+      '<span class="foldsum">' + paidN + ' paid' + (skipN ? ' · ' + skipN + ' skipped' : '') + '</span>' +
+      '<span class="chev" aria-hidden="true"></span></summary>' + inner + '</details>';
 }
 
 function rowHTML(b, pk){
@@ -964,12 +1020,10 @@ function rowHTML(b, pk){
   const p   = payFor(b.id, pk);
   const s   = srcOf(b.sourceId);
   const amt = p ? (p.amount || 0) : (b.amount || 0);
+  // due-state lives on the group header; rows only say what the header can't
   let stat = '<span class="stat plain">' + (b.amount ? "" : "no set amount") + '</span>';
   if(st === "paid")    stat = '<span class="stat paid">Paid ' + shortDate(p.date) + '</span>';
   if(st === "skipped") stat = '<span class="stat skipped">Skipped</span>';
-  if(st === "missed")  stat = '<span class="stat missed">Overdue</span>';
-  if(st === "today")   stat = '<span class="stat today">Due today</span>';
-  if(st === "soon")    stat = '<span class="stat soon">Due soon</span>';
   return '<div class="row" data-state="' + st + '">' +
     '<button class="tick" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
       '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
@@ -1758,7 +1812,7 @@ $("#importFile").onchange = e => {
 // would fight the browser's own <details> toggle
 $("#main").addEventListener("toggle", e => {
   const d = e.target.closest && e.target.closest("[data-fold]");
-  if(d){ S.settledOpen = d.open; saveLocal(); }
+  if(d){ S[d.dataset.fold === "src" ? "srcOpen" : "settledOpen"] = d.open; saveLocal(); }
 }, true);
 
 $("#main").addEventListener("click", e => {
