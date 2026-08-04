@@ -290,6 +290,36 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .stat.plain{color:var(--muted); font-weight:500}
 .stat.skipped{color:var(--muted); font-weight:500}
 
+/* ── settled collapser ──────────────────────────────────────────── */
+.fold{border-top:1px solid var(--line); margin-top:4px}
+.fold summary{
+  display:flex; align-items:center; gap:10px; padding:14px 16px;
+  cursor:pointer; list-style:none; min-height:48px; background:var(--surface);
+  border-bottom:1px solid transparent;
+}
+.fold summary::-webkit-details-marker{display:none}
+.fold[open] summary{border-bottom-color:var(--line)}
+.fold summary:hover{background:var(--surface-2)}
+.foldsum{margin-left:auto; font-size:12.5px; color:var(--muted);
+  font-variant-numeric:tabular-nums}
+.chev{
+  width:9px; height:9px; flex:none; border-right:1.6px solid var(--muted);
+  border-bottom:1.6px solid var(--muted); transform:rotate(45deg) translate(-2px,-2px);
+  transition:transform .18s ease;
+}
+.fold[open] .chev{transform:rotate(-135deg) translate(-2px,-2px)}
+.fold .rows{border-top:0}
+.fold .row{opacity:.72}
+
+.allclear{
+  display:flex; flex-direction:column; align-items:center; gap:4px;
+  padding:34px 24px 30px; text-align:center;
+}
+.allclear svg{width:26px; height:26px; fill:none; stroke:var(--ok); stroke-width:2;
+  stroke-linecap:round; stroke-linejoin:round; margin-bottom:4px}
+.allclear b{font-family:var(--f-display); font-size:16.5px; font-weight:600; color:var(--ink)}
+.allclear span{font-size:13px; color:var(--muted)}
+
 .empty{
   text-align:center; padding:52px 28px; color:var(--muted); font-size:14px;
 }
@@ -889,9 +919,18 @@ function ledgerHTML(){
   }
   out += viewbarHTML(list.length);
   if(S.viewMode === "tiles") return out + tilesHTML(list);
+
   const pk = periodKey(UI.y, UI.m);
-  const byDay = new Map();
+  // Settled bills are done with — they belong out of the way, not padding
+  // out a list you have to scroll past to find what still needs paying.
+  const open = [], settled = [];
   for(const b of list){
+    const st = stateOf(b, UI.y, UI.m);
+    (st === "paid" || st === "skipped" ? settled : open).push(b);
+  }
+
+  const byDay = new Map();
+  for(const b of open){
     const d = Math.min(b.dueDay, daysIn(UI.y, UI.m));
     if(!byDay.has(d)) byDay.set(d, []);
     byDay.get(d).push(b);
@@ -899,34 +938,50 @@ function ledgerHTML(){
   for(const [day, items] of [...byDay.entries()].sort((a,b) => a[0]-b[0])){
     out += '<section class="group"><div class="group-head">' +
       '<span class="eyebrow">' + MON3[UI.m] + ' ' + day + '</span>' +
-      '<span class="rule"></span><span class="cnt">' + items.length + '</span></div><div class="rows">';
-    for(const b of items){
-      const st = stateOf(b, UI.y, UI.m);
-      const p  = payFor(b.id, pk);
-      const s  = srcOf(b.sourceId);
-      const amt = p ? (p.amount || 0) : (b.amount || 0);
-      let stat = '<span class="stat plain">' + (b.amount ? "" : "no set amount") + '</span>';
-      if(st === "paid")    stat = '<span class="stat paid">Paid ' + shortDate(p.date) + '</span>';
-      if(st === "skipped") stat = '<span class="stat skipped">Skipped</span>';
-      if(st === "missed")  stat = '<span class="stat missed">Overdue</span>';
-      if(st === "today")   stat = '<span class="stat today">Due today</span>';
-      if(st === "soon")    stat = '<span class="stat soon">Due soon</span>';
-      out += '<div class="row" data-state="' + st + '">' +
-        '<button class="tick" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
-          '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
-        '<button class="body" data-open="' + esc(b.id) + '">' +
-          '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
-            '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
-            (b.freq !== "monthly" ? '<span class="sep">·</span><span class="freq-tag">' + FREQ[b.freq].label + '</span>' : '') +
-            (b.note ? '<span class="sep">·</span>' + esc(b.note) : '') +
-            '</span></span>' +
-          '<span class="amt-col"><span class="amt num">' + (amt ? money(amt, b.currency) : "—") + '</span>' +
-            stat + '</span>' +
-        '</button></div>';
-    }
-    out += '</div></section>';
+      '<span class="rule"></span><span class="cnt">' + items.length + '</span></div><div class="rows">' +
+      items.map(b => rowHTML(b, pk)).join("") + '</div></section>';
+  }
+
+  if(!open.length){
+    out += '<div class="allclear">' + I.check +
+      '<b>Everything is settled for ' + MONTHS[UI.m] + '</b>' +
+      '<span>' + settled.length + ' bill' + (settled.length === 1 ? '' : 's') + ' cleared or skipped</span></div>';
+  }
+  if(settled.length){
+    const paidN = settled.filter(b => stateOf(b, UI.y, UI.m) === "paid").length;
+    const skipN = settled.length - paidN;
+    out += '<details class="fold"' + (S.settledOpen ? ' open' : '') + ' data-fold="settled">' +
+      '<summary><span class="eyebrow">Settled</span>' +
+        '<span class="foldsum">' + paidN + ' paid' + (skipN ? ' · ' + skipN + ' skipped' : '') + '</span>' +
+        '<span class="chev" aria-hidden="true"></span></summary>' +
+      '<div class="rows">' + settled.map(b => rowHTML(b, pk)).join("") + '</div></details>';
   }
   return out;
+}
+
+function rowHTML(b, pk){
+  const st  = stateOf(b, UI.y, UI.m);
+  const p   = payFor(b.id, pk);
+  const s   = srcOf(b.sourceId);
+  const amt = p ? (p.amount || 0) : (b.amount || 0);
+  let stat = '<span class="stat plain">' + (b.amount ? "" : "no set amount") + '</span>';
+  if(st === "paid")    stat = '<span class="stat paid">Paid ' + shortDate(p.date) + '</span>';
+  if(st === "skipped") stat = '<span class="stat skipped">Skipped</span>';
+  if(st === "missed")  stat = '<span class="stat missed">Overdue</span>';
+  if(st === "today")   stat = '<span class="stat today">Due today</span>';
+  if(st === "soon")    stat = '<span class="stat soon">Due soon</span>';
+  return '<div class="row" data-state="' + st + '">' +
+    '<button class="tick" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
+      '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
+    '<button class="body" data-open="' + esc(b.id) + '">' +
+      '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
+        '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
+        (b.freq !== "monthly" ? '<span class="sep">·</span><span class="freq-tag">' + FREQ[b.freq].label + '</span>' : '') +
+        (b.note ? '<span class="sep">·</span>' + esc(b.note) : '') +
+        '</span></span>' +
+      '<span class="amt-col"><span class="amt num">' + (amt ? money(amt, b.currency) : "—") + '</span>' +
+        stat + '</span>' +
+    '</button></div>';
 }
 function shortDate(isoStr){
   if(!isoStr) return "";
@@ -1699,6 +1754,13 @@ $("#importFile").onchange = e => {
 };
 
 /* ── events ─────────────────────────────────────────────────────── */
+// remember whether the settled fold was left open, without a re-render that
+// would fight the browser's own <details> toggle
+$("#main").addEventListener("toggle", e => {
+  const d = e.target.closest && e.target.closest("[data-fold]");
+  if(d){ S.settledOpen = d.open; saveLocal(); }
+}, true);
+
 $("#main").addEventListener("click", e => {
   const act = e.target.closest("[data-act]");
   if(act){
