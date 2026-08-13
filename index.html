@@ -1457,7 +1457,8 @@ function cardsHTML(){
     }).join("") + '</div>').join("");
 
   out += '<div class="cardacts"><button class="ghost" data-act="addcard">Add a card</button>' +
-    '<button class="ghost" data-act="refreshall">Update all balances</button></div>';
+    '<button class="ghost" data-act="refreshall">Update all balances</button>' +
+    '<button class="ghost" data-act="copyai">Copy a snapshot for an AI</button></div>';
   return out;
 }
 
@@ -2029,6 +2030,122 @@ function wireSheet(b, pk){
   });
 }
 
+/* ── snapshot for an AI ─────────────────────────────────────────────
+   Compact markdown rather than raw JSON: an LLM reads a table far more
+   reliably than a nested object, and it costs a fraction of the tokens.
+   Derived figures are included so nothing has to be recomputed.       */
+function aiSnapshot(){
+  const L = [];
+  const d = new Date();
+  const plain = (n, cur) => (cur === "INR" ? "₹" : "$") +
+    Math.round(n).toLocaleString(cur === "INR" ? "en-IN" : "en-US");
+
+  L.push("# Money snapshot — " + d.toDateString());
+  L.push("");
+
+  for(const [cur, list] of cardGroups()){
+    const rows = list.map(c => [c, cardState(c)]);
+    L.push("## Credit cards (" + (cur === "INR" ? "INR" : "USD") + ")");
+    L.push("");
+    L.push("| Card | Limit | Confirmed bal | Est. today | Available | Used | APR | Confirmed |");
+    L.push("|---|---|---|---|---|---|---|---|");
+    for(const [c,s] of rows){
+      L.push("| " + [
+        c.name,
+        s.limit ? plain(s.limit, cur) : "—",
+        plain(s.confirmed, cur),
+        plain(s.estimate, cur),
+        s.avail == null ? "—" : (s.avail < 0 ? "OVER by " + plain(-s.avail, cur) : plain(s.avail, cur)),
+        s.util == null ? "—" : Math.round(s.util * 100) + "%",
+        c.apr ? c.apr + "%" : "—",
+        !c.confirmedAt ? "never" : s.age === 0 ? "today" : s.age + "d ago"
+      ].join(" | ") + " |");
+    }
+    const lim = rows.reduce((n,[,s]) => n + s.limit, 0);
+    const bal = rows.reduce((n,[,s]) => n + s.estimate, 0);
+    L.push("");
+    L.push("Totals: limit " + plain(lim, cur) + " · owed " + plain(bal, cur) +
+           " · available " + plain(Math.max(0, lim - bal), cur) +
+           (lim ? " · overall utilisation " + Math.round((bal / lim) * 100) + "%" : ""));
+    L.push("");
+  }
+
+  // this month's bills, so questions about cash flow have the numbers
+  const list = billsFor(UI.y, UI.m);
+  if(list.length){
+    const pk = periodKey(UI.y, UI.m);
+    L.push("## Bills — " + MONTHS[UI.m] + " " + UI.y);
+    L.push("");
+    L.push("| Bill | Due | Amount | Paid from | Status |");
+    L.push("|---|---|---|---|---|");
+    for(const b of list){
+      const st = stateOf(b, UI.y, UI.m), g = progressOf(b, pk);
+      L.push("| " + [
+        b.name, MON3[UI.m] + " " + Math.min(b.dueDay, daysIn(UI.y, UI.m)),
+        b.amount ? plain(b.amount, b.currency) : "varies",
+        srcOf(b.sourceId).name,
+        st === "paid" ? "paid" : st === "skipped" ? "nothing owed"
+          : st === "partial" ? "part-paid " + plain(g.paid, b.currency) + ", " + plain(g.left, b.currency) + " left"
+          : st === "missed" ? "OVERDUE" : "due"
+      ].join(" | ") + " |");
+    }
+    L.push("");
+  }
+
+  if(S.loans.length){
+    L.push("## Loans");
+    L.push("");
+    L.push("| Loan | Balance | APR | Min payment |");
+    L.push("|---|---|---|---|");
+    for(const l of S.loans)
+      L.push("| " + [l.name, plain(l.balance, l.currency), l.apr ? l.apr + "%" : "—",
+             l.minPayment ? plain(l.minPayment, l.currency) : "—"].join(" | ") + " |");
+    L.push("");
+  }
+  if(S.accounts.length){
+    L.push("## Cash");
+    L.push("");
+    for(const a of S.accounts)
+      L.push("- " + a.bank + " " + a.name + ": " + plain(a.balance, a.currency));
+    L.push("");
+  }
+
+  L.push("## How to read this");
+  L.push("- **Confirmed bal** is what the card app last showed, on the date given.");
+  L.push("- **Est. today** adds estimated interest since then plus anything logged. It is an estimate, not a statement figure.");
+  L.push("- Utilisation above 30% is generally treated as weighing on credit scoring; above 80% is close to declining.");
+  L.push("");
+  L.push("## Questions worth asking");
+  L.push("- Which card should I put a payment on first, and what does that save?");
+  L.push("- If I have a fixed amount spare this month, how should I split it?");
+  L.push("- Which cards are hurting my credit utilisation most, and what payment fixes that?");
+  L.push("- Does anything here look wrong or inconsistent?");
+  return L.join("\n");
+}
+
+async function doCopyForAI(){
+  const text = aiSnapshot();
+  try{
+    if(navigator.clipboard && window.isSecureContext){
+      await navigator.clipboard.writeText(text);
+      return toast("Copied — paste it into any AI chat", 3200);
+    }
+  }catch(e){ /* fall through */ }
+  try{
+    if(navigator.canShare && navigator.canShare({text})){
+      await navigator.share({text}); return;
+    }
+  }catch(e){ if(e && e.name === "AbortError") return; }
+  // last resort: show it so it can be selected by hand
+  UI.sheet = "data";
+  $("#sheetTitle").textContent = "Snapshot";
+  $("#sheetBody").innerHTML =
+    '<div class="sec"><div class="hint" style="margin-bottom:9px">Select all and copy.</div>' +
+    '<textarea readonly id="aiOut" style="width:100%;min-height:50vh;font-family:var(--f-num);font-size:11.5px">' +
+    esc(text) + '</textarea></div>';
+  const ta = $("#aiOut"); ta.focus(); ta.select();
+}
+
 /* ── card sheet ─────────────────────────────────────────────────── */
 function newCard(){
   const c = {
@@ -2281,6 +2398,11 @@ function openData(){
         S.bills.filter(b => !b.archived).length + ' reminders to Calendar</button>' +
       '<div class="hint" style="margin-top:9px">Adding them again replaces the old ones rather than duplicating, as long as you keep them in the same calendar.</div>' +
     '</div>' +
+    '<div class="sec"><span class="eyebrow">Ask an AI</span>' +
+      '<div class="hint" style="margin-bottom:11px">Copies a compact summary of your cards and this month\u2019s bills as text, ready to paste into any AI chat for advice. Nothing is sent anywhere by this app \u2014 you choose where it goes.</div>' +
+      '<button class="ghost" id="aiBtn">Copy snapshot to clipboard</button>' +
+      '<div class="hint" style="margin-top:9px">It contains balances, limits and card names. Paste it only somewhere you are comfortable putting that.</div>' +
+    '</div>' +
     syncSectionHTML() +
     '<div class="sec"><span class="eyebrow">Manual backup</span>' +
       '<div class="bstat ' + (isDirty() ? "dirty" : "clean") + '">' +
@@ -2350,6 +2472,7 @@ function openData(){
     saveLocal(); openData(); render(); toast("Sync off");
   };
 
+  if(q("#aiBtn")) q("#aiBtn").onclick = doCopyForAI;
   if(q("#calBtn")) q("#calBtn").onclick = doCalendar;
   body.querySelector("#expBtn").onclick = doExport;
   body.querySelector("#impBtn").onclick = () => $("#importFile").click();
@@ -2470,6 +2593,7 @@ $("#main").addEventListener("click", e => {
       setTimeout(() => { const el = $("#cName"); if(el) el.focus(); }, 280);
     }
     if(a === "refreshall") openRefreshAll();
+    if(a === "copyai") doCopyForAI();
     if(a === "fixstale") openRefreshAll();
     return;
   }
