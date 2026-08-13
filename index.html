@@ -423,6 +423,10 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .us-label{margin-left:auto; font-size:10.5px; color:var(--muted); text-align:right; max-width:96px; line-height:1.25}
 .planblock .mini-row .d{color:var(--muted); font-size:11.5px}
 .planblock .paydel{height:34px; width:28px}
+.kindtag{font-style:normal; font-size:9.5px; font-weight:650; letter-spacing:.05em;
+  text-transform:uppercase; color:var(--muted); background:var(--surface-2);
+  border:1px solid var(--line); border-radius:4px; padding:1px 4px; margin-left:6px}
+.kindtag.warn{color:var(--warn); border-color:var(--warn); background:var(--warn-soft)}
 .cardacts .ghost{margin-top:0}
 
 /* ── settled collapser ──────────────────────────────────────────── */
@@ -1076,7 +1080,9 @@ function sanitize(d){
     balance:Math.max(0, sNum(l.balance, 0)),
     apr:Math.min(100, Math.max(0, sNum(l.apr, 0))),
     minPayment:Math.max(0, sNum(l.minPayment, 0)),
-    confirmedAt:l.confirmedAt ? sDate(l.confirmedAt) : ""
+    confirmedAt:l.confirmedAt ? sDate(l.confirmedAt) : "",
+    billId: billIdSet.has(sId(l.billId)) ? sId(l.billId) : "",
+    archived: !!l.archived
   }).filter(l => l && l.id);
 
   const accounts = (Array.isArray(d.accounts) ? d.accounts : []).slice(0, 200).map(a => a && {
@@ -1506,6 +1512,25 @@ function planHTML(){
       '</span><span class="chev" aria-hidden="true"></span></summary>' +
       '<div class="planbody">';
 
+    // --- loans: balance and APR, but no limit, so they sit apart from utilisation ---
+    const loans = activeLoans().filter(l => l.currency === cur);
+    const loanTotal = loans.reduce((n,l) => n + loanState(l).estimate, 0);
+    out += '<div class="planblock"><div class="planhead"><span>Loans</span>' +
+      '<b class="num">' + money(loanTotal, cur) + '</b></div>';
+    out += loans.length
+      ? '<div class="mini">' + loans.map(l => {
+          const s = loanState(l);
+          return '<div class="mini-row"><span>' + esc(l.name) +
+            (s.shaky ? '<i class="kindtag warn">check</i>' : '') + '</span>' +
+            '<span class="d" style="width:auto;margin-left:8px">' +
+              (l.apr ? l.apr + '%' : 'no APR') + '</span>' +
+            '<span class="a num">' + money(s.estimate, cur) + '</span>' +
+            '<button class="paydel" data-editloan="' + esc(l.id) + '" aria-label="Edit ' + esc(l.name) + '">' +
+            '<svg viewBox="0 0 24 24"><path d="M4 20h16M13.5 5.5l3 3L8 17H5v-3z"/></svg></button></div>';
+        }).join("") + '</div>'
+      : '<div class="hint">A personal or vehicle loan has no credit limit, so it never affects utilisation — but it is usually the dearest thing you owe, so it belongs in the order below.</div>';
+    out += '<button class="ghost" data-act="addloan" style="margin-top:9px">Add a loan</button></div>';
+
     // --- cash on hand ---
     out += '<div class="planblock"><div class="planhead"><span>Cash I can spend</span>' +
       '<b class="num">' + money(cash, cur) + '</b></div>';
@@ -1541,7 +1566,8 @@ function planHTML(){
       out += plan.steps.length
         ? '<div class="mini">' + plan.steps.map(st =>
             '<div class="mini-row"><span>' + esc(st.name) + '</span>' +
-            '<span class="d" style="width:auto;margin-left:8px">' + st.from + '% → ' + st.to + '%</span>' +
+            '<span class="d" style="width:auto;margin-left:8px">' +
+              (st.from == null ? 'loan' : st.from + '% → ' + st.to + '%') + '</span>' +
             '<span class="a num">' + money(st.amount, cur) + '</span></div>').join("") + '</div>'
         : '<div class="hint">Nothing to pay down — or no cash recorded yet.</div>';
       if(plan.saved > 1)
@@ -1564,8 +1590,9 @@ function planHTML(){
         const yr = po.reduce((n,r) => n + r.monthly, 0) * 12;
         out += '<div class="planblock"><div class="planhead"><span>Costs most to carry</span>' +
           '<b class="num">' + money(yr, cur) + '<em>/yr</em></b></div><div class="mini">' +
-          po.slice(0, 8).map(r =>
-            '<div class="mini-row"><span>' + esc(r.c.name) + '</span>' +
+          po.slice(0, 10).map(r =>
+            '<div class="mini-row"><span>' + esc(r.name) +
+              (r.kind === "loan" ? '<i class="kindtag">loan</i>' : '') + '</span>' +
             '<span class="d" style="width:auto;margin-left:8px">' + (r.apr ? r.apr + '%' : 'no APR') + '</span>' +
             '<span class="a num">' + money(r.monthly, cur) + '<em>/mo</em></span></div>').join("") +
           '</div><div class="hint" style="margin-top:7px">Interest is an estimate from the APR you entered. Clearing the top of this list saves the most.</div></div>';
@@ -1901,6 +1928,11 @@ function openSheet(billId, period){
   $("#sheet").classList.add("on");
 }
 function closeSheet(){
+  if(UI.loanDraft){
+    const l = loanOf(UI.loanId);
+    if(l && !l.name.trim() && !l.balance) S.loans = S.loans.filter(x => x.id !== l.id), save();
+    UI.loanDraft = false;
+  }
   if(UI.acctDraft){
     const a = S.accounts.find(x => x.id === UI.acctId);
     if(a && !a.name.trim() && !a.bank.trim() && !a.balance)
@@ -1923,7 +1955,7 @@ function closeSheet(){
   }
   $("#scrim").classList.remove("on");
   $("#sheet").classList.remove("on");
-  UI.billId = null; UI.cardId = null; UI.acctId = null; UI.sheet = null;
+  UI.billId = null; UI.cardId = null; UI.acctId = null; UI.loanId = null; UI.sheet = null;
   render();
 }
 
@@ -2150,6 +2182,35 @@ function wireSheet(b, pk){
   });
 }
 
+/* ── loans ──────────────────────────────────────────────────────────
+   A loan has a balance and an APR but no credit limit, so it stays out
+   of anything about utilisation or room to spend. It very much belongs
+   in what the debt costs to carry — a personal loan is often the most
+   expensive thing on the list.                                        */
+const activeLoans = () => S.loans.filter(l => !l.archived);
+const loanOf = id => S.loans.find(l => l.id === id);
+
+function loanState(l){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const conf = l.confirmedAt ? new Date(l.confirmedAt + "T00:00:00") : null;
+  const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
+  const since = d => l.confirmedAt ? d > l.confirmedAt : true;
+  const repaid = l.billId
+    ? S.payments.filter(p => p.billId === l.billId && p.status === "paid" && since(p.date))
+                .reduce((n,p) => n + (p.amount || 0), 0)
+    : 0;
+  const interest = (l.apr && age) ? (l.balance || 0) * (l.apr / 100 / 365) * age : 0;
+  const estimate = Math.max(0, (l.balance || 0) + interest - repaid);
+  const fresh = age == null ? "never" : age <= 31 ? "fresh" : age <= 62 ? "aging" : "stale";
+  return {
+    estimate, interest, repaid, age, fresh,
+    confirmed: l.balance || 0,
+    monthly: (estimate * (l.apr || 0) / 100) / 12,
+    shaky: !l.confirmedAt || fresh === "stale",
+    moved: repaid > 0 || interest >= 1
+  };
+}
+
 /* ── cash on hand ───────────────────────────────────────────────────
    Not net worth — just what is actually available to pay cards with.  */
 function cashFor(cur){
@@ -2206,14 +2267,22 @@ function coachPlan(cur, budget, mode){
       put(r, Math.min(need, Math.max(1, r.bal - r.limit * UTIL_GOOD) || r.bal));
     }
   }
-  // 4. remainder goes where the debt costs most to carry
+  // 4. remainder goes where the debt costs most to carry — loans included,
+  //    since a personal loan is often dearer than any of the cards
+  const loanRows = activeLoans().filter(l => l.currency === cur)
+    .map(l => { const s = loanState(l);
+      return {c:{id:l.id, name:l.name}, kind:"loan", bal:s.estimate, limit:0, apr:l.apr || 0}; })
+    .filter(r => r.bal > 0);
   if(cash > 0.5)
-    rows.filter(r => r.bal > 0).sort((a,b) => b.apr - a.apr).forEach(r => put(r, r.bal));
+    [...rows, ...loanRows].filter(r => r.bal > 0)
+      .sort((a,b) => b.apr - a.apr)
+      .forEach(r => put(r, r.bal));
 
   const endBal = rows.reduce((n,r) => n + r.bal, 0);
   // what the split takes off the yearly interest bill
+  const all = [...rows, ...loanRows];
   const saved = [...pay.entries()].reduce((n,[id,amt]) => {
-    const r = rows.find(x => x.c.id === id);
+    const r = all.find(x => x.c.id === id);
     return n + amt * (r ? r.apr : 0) / 100;
   }, 0);
   // a dollar paid anywhere moves the overall number identically, so what
@@ -2224,21 +2293,29 @@ function coachPlan(cur, budget, mode){
     startUtil: limitSum ? startBal / limitSum : 0,
     endUtil:   limitSum ? endBal   / limitSum : 0,
     spent: Math.max(0, budget) - cash, leftover: cash,
-    steps: rows.filter(r => pay.get(r.c.id))
-               .map(r => ({name:r.c.name, amount:pay.get(r.c.id),
-                           from:Math.round((r.bal + pay.get(r.c.id)) / r.limit * 100),
-                           to:Math.round(r.bal / r.limit * 100)}))
-               .sort((a,b) => b.from - a.from),   // worst card first = do this first
+    steps: all.filter(r => pay.get(r.c.id))
+              .map(r => ({
+                name:r.c.name, amount:pay.get(r.c.id), kind:r.kind || "card",
+                from:r.limit ? Math.round((r.bal + pay.get(r.c.id)) / r.limit * 100) : null,
+                to:  r.limit ? Math.round(r.bal / r.limit * 100) : null
+              }))
+              // worst card first, loans after (they have no percentage to fix)
+              .sort((a,b) => (b.from == null ? -1 : b.from) - (a.from == null ? -1 : a.from)),
     overLimit: rows.filter(r => r.bal > r.limit).length
   };
 }
 
-/** What each card costs to carry, dearest first. */
+/** Everything you owe in one currency, dearest to carry first.
+ *  Cards and loans together — the ordering question is the same for both. */
 function payoffOrder(cur){
-  return activeCards()
-    .filter(c => c.currency === cur)
-    .map(c => { const s = cardState(c); return {c, bal:s.estimate, apr:c.apr || 0,
-                 monthly: (s.estimate * (c.apr || 0) / 100) / 12}; })
+  const cards = activeCards().filter(c => c.currency === cur)
+    .map(c => { const s = cardState(c);
+      return {id:c.id, kind:"card", name:c.name, bal:s.estimate, apr:c.apr || 0, monthly:s.monthly ||
+               (s.estimate * (c.apr || 0) / 100) / 12}; });
+  const loans = activeLoans().filter(l => l.currency === cur)
+    .map(l => { const s = loanState(l);
+      return {id:l.id, kind:"loan", name:l.name, bal:s.estimate, apr:l.apr || 0, monthly:s.monthly}; });
+  return [...cards, ...loans]
     .filter(r => r.bal > 0)
     .sort((a,b) => b.apr - a.apr || b.bal - a.bal);
 }
@@ -2312,7 +2389,8 @@ function aiSnapshot(){
       L.push("### Carrying cost, dearest first (" + cur + ")");
       L.push("");
       for(const r of po)
-        L.push("- " + r.c.name + ": " + (r.apr ? r.apr + "% APR" : "APR unknown") +
+        L.push("- " + r.name + (r.kind === "loan" ? " (loan)" : "") + ": " +
+               (r.apr ? r.apr + "% APR" : "APR unknown") +
                " on " + plain(r.bal, cur) + " ≈ " + plain(r.monthly, cur) + "/mo");
       L.push("");
       L.push("Total interest ≈ " + plain(po.reduce((n,r)=>n+r.monthly,0)*12, cur) + "/yr");
@@ -2342,14 +2420,22 @@ function aiSnapshot(){
     L.push("");
   }
 
-  if(S.loans.length){
+  if(activeLoans().length){
     L.push("## Loans");
     L.push("");
-    L.push("| Loan | Balance | APR | Min payment |");
-    L.push("|---|---|---|---|");
-    for(const l of S.loans)
-      L.push("| " + [l.name, plain(l.balance, l.currency), l.apr ? l.apr + "%" : "—",
-             l.minPayment ? plain(l.minPayment, l.currency) : "—"].join(" | ") + " |");
+    L.push("| Loan | Lender | Balance | APR | Interest/mo | Monthly payment | Confirmed | Paid by bill |");
+    L.push("|---|---|---|---|---|---|---|---|");
+    for(const l of activeLoans()){
+      const s = loanState(l);
+      const bill = l.billId ? (S.bills.find(b => b.id === l.billId) || {}).name : null;
+      L.push("| " + [
+        l.name, l.lender || "—", plain(s.estimate, l.currency),
+        l.apr ? l.apr + "%" : "—", plain(s.monthly, l.currency),
+        l.minPayment ? plain(l.minPayment, l.currency) : "—",
+        !l.confirmedAt ? "never" : s.age === 0 ? "today" : s.age + "d ago",
+        bill || "not linked"
+      ].join(" | ") + " |");
+    }
     L.push("");
   }
 
@@ -2525,6 +2611,97 @@ function wireCardSheet(c){
     S.statements = S.statements.filter(x => x.cardId !== c.id);
     save(); closeSheet(); toast("Deleted");
   };
+}
+
+/* ── loan sheet ─────────────────────────────────────────────────── */
+function openLoan(loanId){
+  UI.sheet = "loan"; UI.cardId = null; UI.acctId = null;
+  let l = loanId ? loanOf(loanId) : null;
+  if(!l){
+    l = {id:uid(), name:"", lender:"", currency:(activeCards()[0] || {}).currency || "USD",
+         balance:0, apr:0, minPayment:0, confirmedAt:todayISO, billId:"", archived:false};
+    S.loans.push(l); save(); UI.loanDraft = true;
+  }
+  UI.loanId = l.id;
+  const s = loanState(l);
+  $("#sheetTitle").textContent = l.name || "New loan";
+  const billOptions = '<option value="">Not linked</option>' +
+    S.bills.filter(b => !b.archived).map(b =>
+      '<option value="' + esc(b.id) + '"' + (b.id === l.billId ? " selected" : "") + '>' +
+      esc(b.name) + '</option>').join("");
+
+  $("#sheetBody").innerHTML =
+    '<div class="sec"><span class="eyebrow">Outstanding</span>' +
+      '<div class="paystate">' +
+        '<div class="paystate-top"><span>Balance</span>' +
+          '<b class="num">' + money(s.estimate, l.currency) + '</b></div>' +
+        '<div class="paystate-sub">' +
+          (l.apr ? 'Costing about ' + money(s.monthly, l.currency) + ' a month in interest'
+                 : 'Add the APR to see what it costs to carry') + '</div></div>' +
+      (s.moved
+        ? '<div class="mini" style="margin-top:11px">' +
+          '<div class="mini-row"><span>Confirmed balance</span><span class="a num">' +
+            money(s.confirmed, l.currency) + '</span></div>' +
+          (s.interest >= 1 ? '<div class="mini-row"><span class="d" style="width:auto">est. interest</span>' +
+            '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.interest, l.currency) + '</span></div>' : '') +
+          (s.repaid ? '<div class="mini-row"><span class="d" style="width:auto">payments since</span>' +
+            '<span class="a" style="font-weight:500;color:var(--ok)">−' + money(s.repaid, l.currency) + '</span></div>' : '') +
+          '</div>' : '') +
+      '<button class="primary" id="loanConfirm" style="margin-top:11px">Update balance from the lender</button>' +
+    '</div>' +
+
+    '<div class="sec"><span class="eyebrow">Loan settings</span><div class="fields">' +
+      '<div class="two">' +
+        '<div class="field"><label for="lName">Name</label>' +
+          '<input type="text" id="lName" placeholder="e.g. SoFi personal loan" value="' + esc(l.name) + '"></div>' +
+        '<div class="field"><label for="lLender">Lender</label>' +
+          '<input type="text" id="lLender" placeholder="e.g. SoFi" value="' + esc(l.lender) + '"></div>' +
+      '</div>' +
+      '<div class="two">' +
+        '<div class="field"><label for="lApr">APR %</label>' +
+          '<input type="number" inputmode="decimal" step="0.01" id="lApr" placeholder="28" value="' + (l.apr || "") + '"></div>' +
+        '<div class="field"><label for="lCur">Currency</label><select id="lCur">' +
+          '<option value="USD"' + (l.currency==="USD"?" selected":"") + '>US $</option>' +
+          '<option value="INR"' + (l.currency==="INR"?" selected":"") + '>India ₹</option>' +
+        '</select></div>' +
+      '</div>' +
+      '<div class="field"><label for="lMin">Monthly payment</label>' +
+        '<input type="number" inputmode="decimal" step="0.01" id="lMin" value="' + (l.minPayment || 0) + '"></div>' +
+      '<div class="field"><label for="lBill">Paid by which bill</label>' +
+        '<select id="lBill">' + billOptions + '</select></div>' +
+      '<div class="hint">Link it and the payments you tick off each month come straight off this balance.</div>' +
+    '</div></div>' +
+
+    '<div class="sec">' +
+      '<button class="ghost" id="lArch">' + (l.archived ? "Restore" : "Archive (hide it)") + '</button>' +
+      '<button class="danger" id="lDel">Delete this loan</button>' +
+    '</div>';
+
+  const body = $("#sheetBody"), q = id => body.querySelector(id);
+  const patch = () => { save(); render(); };
+  const reflow = () => { openLoan(l.id); render(); };
+  q("#loanConfirm").onclick = () => {
+    const v = prompt("Balance the lender shows for " + (l.name || "this loan") + ":", String(l.balance || 0));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n < 0) return toast("Enter a number");
+    l.balance = n; l.confirmedAt = todayISO; save(); reflow(); toast("Balance confirmed");
+  };
+  q("#lName").onchange   = e => { l.name = e.target.value.trim(); UI.loanDraft = false;
+                                  $("#sheetTitle").textContent = l.name || "New loan"; patch(); };
+  q("#lLender").onchange = e => { l.lender = e.target.value.trim(); patch(); };
+  q("#lApr").onchange    = e => { l.apr = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
+  q("#lCur").onchange    = e => { l.currency = e.target.value; reflow(); patch(); };
+  q("#lMin").onchange    = e => { l.minPayment = Math.max(0, parseFloat(e.target.value) || 0); patch(); };
+  q("#lBill").onchange   = e => { l.billId = e.target.value; reflow(); patch(); };
+  q("#lArch").onclick    = () => { l.archived = !l.archived; save(); closeSheet(); };
+  q("#lDel").onclick     = () => {
+    if(!confirm('Delete "' + (l.name || "this loan") + '"?')) return;
+    S.loans = S.loans.filter(x => x.id !== l.id);
+    UI.loanDraft = false; save(); closeSheet(); toast("Deleted");
+  };
+  $("#scrim").classList.add("on");
+  $("#sheet").classList.add("on");
 }
 
 /* ── account sheet ──────────────────────────────────────────────── */
@@ -2898,6 +3075,8 @@ $("#main").addEventListener("click", e => {
   if(md){ S.payMode = md.dataset.mode2; save(); render(); return; }
   const acct = e.target.closest("[data-editacct]");
   if(acct){ openAccount(acct.dataset.editacct); return; }
+  const ln = e.target.closest("[data-editloan]");
+  if(ln){ openLoan(ln.dataset.editloan); return; }
   const act = e.target.closest("[data-act]");
   if(act){
     const a = act.dataset.act;
@@ -2910,6 +3089,7 @@ $("#main").addEventListener("click", e => {
     if(a === "refreshall") openRefreshAll();
     if(a === "copyai") doCopyForAI();
     if(a === "addacct") openAccount(null);
+    if(a === "addloan") openLoan(null);
     if(a === "fixstale") openRefreshAll();
     return;
   }
