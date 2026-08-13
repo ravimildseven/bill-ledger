@@ -353,6 +353,61 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .stat.plain{color:var(--muted); font-weight:500}
 .stat.skipped{color:var(--muted); font-weight:500}
 
+/* ── cards ──────────────────────────────────────────────────────── */
+.nag{
+  display:flex; align-items:center; gap:12px; margin:12px 16px 0; padding:12px 13px;
+  border-radius:11px; background:var(--warn-soft); border:1px solid var(--warn);
+  color:var(--warn);
+}
+.nag b{display:block; font-size:13px; font-weight:650}
+.nag span{display:block; font-size:11.5px; opacity:.85; margin-top:2px}
+.nag button{
+  flex:none; margin-left:auto; padding:9px 14px; border-radius:8px; min-height:40px;
+  background:var(--warn); color:var(--surface); font-size:13px; font-weight:650;
+}
+.cardlist{display:flex; flex-direction:column; gap:8px; padding:12px 16px 4px}
+.cardrow{
+  display:block; width:100%; text-align:left; padding:13px 14px 11px;
+  background:var(--surface); border:1px solid var(--line); border-radius:13px;
+  position:relative; overflow:hidden;
+}
+.cardrow::before{content:""; position:absolute; left:0; top:0; bottom:0; width:3px; background:var(--line)}
+.cardrow[data-level="safe"]::before{background:var(--ok)}
+.cardrow[data-level="watch"]::before{background:var(--accent)}
+.cardrow[data-level="tight"]::before{background:var(--warn)}
+.cardrow[data-level="maxed"]::before{background:var(--bad)}
+.cardrow[data-shaky="1"]{border-style:dashed}
+.cardrow[data-over="1"]{border-color:var(--bad); background:var(--bad-soft)}
+.cardrow[data-over="1"] .cardavail{color:var(--bad)}
+.cardrow[data-over="1"] .cardavail em{color:var(--bad); opacity:.9}
+.cardrow-top{display:flex; align-items:baseline; gap:10px}
+.cardname{
+  font-size:15px; font-weight:600; letter-spacing:-.005em; min-width:0;
+  overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}
+.cardavail{margin-left:auto; flex:none; font-size:19px; font-weight:600; letter-spacing:-.02em}
+.cardrow[data-level="maxed"] .cardavail{color:var(--bad)}
+.cardrow[data-level="tight"] .cardavail{color:var(--warn)}
+.cardrow[data-level="safe"]  .cardavail{color:var(--ok)}
+.cardavail em{
+  font-style:normal; display:block; text-align:right; font-size:9.5px; font-weight:600;
+  letter-spacing:.05em; text-transform:uppercase; color:var(--muted); margin-top:1px;
+}
+.cardbar{display:block; height:5px; border-radius:99px; background:var(--line-soft);
+  overflow:hidden; margin:9px 0 7px}
+.cardbar i{display:block; height:100%; background:var(--muted)}
+.cardrow[data-level="safe"]  .cardbar i{background:var(--ok)}
+.cardrow[data-level="watch"] .cardbar i{background:var(--accent)}
+.cardrow[data-level="tight"] .cardbar i{background:var(--warn)}
+.cardrow[data-level="maxed"] .cardbar i{background:var(--bad)}
+.cardrow-bot{display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--muted)}
+.chip-level{font-weight:600}
+.cardnote{margin-left:auto; text-align:right; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis}
+.cardrow[data-shaky="1"] .cardnote{color:var(--warn); font-weight:600}
+.cardacts{display:flex; flex-direction:column; gap:8px; padding:14px 16px 4px}
+.cardacts .ghost{margin-top:0}
+
 /* ── settled collapser ──────────────────────────────────────────── */
 .fold{border-top:1px solid var(--line); margin-top:4px}
 .fold summary{
@@ -594,6 +649,7 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" data-view="ledger" aria-selected="true">This month</button>
       <button class="tab" role="tab" data-view="history" aria-selected="false">History</button>
+      <button class="tab" role="tab" data-view="cards" aria-selected="false">Cards</button>
     </div>
   </header>
 
@@ -653,6 +709,7 @@ function seed(){
   return {
     version:1, sources, bills, payments:[], theme:null, viewMode:"list", lastBackup:null,
     updatedAt: d0.getTime(),
+    cards:[], spends:[], statements:[], loans:[], accounts:[],
     sync:{on:false, owner:"", repo:"", path:"bill-ledger.json", sha:null, at:null, err:null},
     // months before this are "not tracked yet", not overdue
     startPeriod: d0.getFullYear() + "-" + String(d0.getMonth()+1).padStart(2,"0")
@@ -684,6 +741,8 @@ const S = load();
 if(!S.sources || !S.bills) Object.assign(S, seed());
 if(!S.payments) S.payments = [];
 if(!S.viewMode) S.viewMode = "list";
+for(const k of ["cards","spends","statements","loans","accounts"])
+  if(!Array.isArray(S[k])) S[k] = [];
 
 /* ── view state ─────────────────────────────────────────────────── */
 const now = new Date();
@@ -809,6 +868,86 @@ function maybeNudge(){
   toast("Unsaved changes — tap the database icon to back up to iCloud", 4200);
 }
 
+/* ── credit cards ───────────────────────────────────────────────────
+   A statement is the most reliable balance and the least current one:
+   it reports the closing balance on the cut date, not today's. So a card
+   carries two numbers and always labels which is which — a confirmed
+   balance with its date, and an estimate for right now built from it.  */
+const cardOf = id => S.cards.find(c => c.id === id);
+const daysBetween = (a, b) => Math.floor((b - a) / 86400000);
+
+/** Interest since the balance was confirmed. Simple apr/12 pro-rated by
+ *  days — it ignores grace periods and cash-advance rates, so it is only
+ *  ever shown as an estimate. */
+function accrued(card, days){
+  if(!card.apr || days <= 0) return 0;
+  return (card.balance || 0) * (card.apr / 100 / 365) * days;
+}
+
+/** Everything the UI needs about one card, derived not stored. */
+function cardState(c){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const conf = c.confirmedAt ? new Date(c.confirmedAt + "T00:00:00") : null;
+  const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
+
+  // movements recorded since the confirmation, which the statement can't know
+  const since = d => c.confirmedAt ? d > c.confirmedAt : true;
+  const spent = S.spends.filter(s => s.cardId === c.id && since(s.date))
+                        .reduce((n,s) => n + (s.amount || 0), 0);
+  const repaid = c.billId
+    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" && since(p.date))
+                .reduce((n,p) => n + (p.amount || 0), 0)
+    : 0;
+
+  const interest = accrued(c, age || 0);
+  const estimate = Math.max(0, (c.balance || 0) + interest + spent - repaid);
+  const limit    = c.limit || 0;
+  const avail    = limit ? limit - estimate : null;
+  const util     = limit ? estimate / limit : null;
+
+  // has this cycle's statement been filed?
+  let awaiting = false, dueSince = null;
+  if(c.statementDay){
+    const cut = new Date(t.getFullYear(), t.getMonth(), Math.min(c.statementDay, daysIn(t.getFullYear(), t.getMonth())));
+    const period = cut <= t ? periodKey(t.getFullYear(), t.getMonth())
+                            : periodKey(t.getMonth() ? t.getFullYear() : t.getFullYear()-1, (t.getMonth()+11)%12);
+    awaiting = !S.statements.some(s => s.cardId === c.id && s.period === period);
+    if(awaiting && cut <= t) dueSince = daysBetween(cut, t);
+  }
+  const unknown = !c.confirmedAt || !limit;
+  const level = util == null ? "none"
+              : util >= 1    ? "maxed"
+              : util >= 0.8  ? "tight"
+              : util >= 0.3  ? "watch" : "safe";
+  return {
+    limit, estimate, avail, util, level, age, interest, spent, repaid,
+    confirmed: c.balance || 0, awaiting, dueSince, unknown,
+    // an estimate stops being worth trusting once it is old or unfiled
+    shaky: unknown || awaiting || (age != null && age > 21),
+    moved: spent > 0 || repaid > 0 || interest >= 1
+  };
+}
+function activeCards(){ return S.cards.filter(c => !c.archived); }
+/** Which card can I actually use — most available credit first.
+ *  Only ever compares within a currency: ₹194,352 is not more room than
+ *  $8,501, and sorting them against each other would say it was. */
+function cardsByAvailable(list){
+  return (list || activeCards()).slice().sort((a,b) => {
+    const A = cardState(a).avail, B = cardState(b).avail;
+    if(A == null && B == null) return a.name.localeCompare(b.name);
+    if(A == null) return 1;
+    if(B == null) return -1;
+    return B - A;
+  });
+}
+/** Cards grouped by currency, each group sorted by available credit. */
+function cardGroups(){
+  const cards = activeCards();
+  return ["USD","INR"]
+    .map(cur => [cur, cardsByAvailable(cards.filter(c => c.currency === cur))])
+    .filter(([,list]) => list.length);
+}
+
 /* ── sanitising the trust boundary ──────────────────────────────────
    Anything arriving from an imported file or the synced repo is treated
    as untrusted: every field is coerced to its expected type and shape
@@ -867,8 +1006,64 @@ function sanitize(d){
       updatedAt:sStr(p.updatedAt, 40)
     }));
 
+  const billIdSet = billIds;
+  const cards = (Array.isArray(d.cards) ? d.cards : []).slice(0, 200).map(c => c && {
+    id:       sId(c.id),
+    name:     sStr(c.name, 60),
+    issuer:   sStr(c.issuer, 40),
+    currency: c.currency === "INR" ? "INR" : "USD",
+    billId:   billIdSet.has(sId(c.billId)) ? sId(c.billId) : "",
+    limit:    Math.max(0, sNum(c.limit, 0)),
+    apr:      Math.min(100, Math.max(0, sNum(c.apr, 0))),
+    statementDay: sInt(c.statementDay, 0, 31, 0),
+    balance:  Math.max(0, sNum(c.balance, 0)),
+    confirmedAt:   c.confirmedAt ? sDate(c.confirmedAt) : "",
+    confirmedFrom: c.confirmedFrom === "statement" ? "statement" : "manual",
+    minPayment: Math.max(0, sNum(c.minPayment, 0)),
+    dueDate:  c.dueDate ? sDate(c.dueDate) : "",
+    archived: !!c.archived
+  }).filter(c => c && c.id);
+  const cardIds = new Set(cards.map(c => c.id));
+
+  const spends = (Array.isArray(d.spends) ? d.spends : []).slice(0, 20000)
+    .filter(x => x && cardIds.has(sId(x.cardId)))
+    .map(x => ({id:sId(x.id) || uid(), cardId:sId(x.cardId), date:sDate(x.date),
+                amount:Math.max(0, sNum(x.amount, 0)), note:sStr(x.note, 120)}));
+
+  const statements = (Array.isArray(d.statements) ? d.statements : []).slice(0, 5000)
+    .filter(x => x && cardIds.has(sId(x.cardId)))
+    .map(x => ({
+      id:sId(x.id) || uid(), cardId:sId(x.cardId), period:sPeriod(x.period),
+      statementDate: x.statementDate ? sDate(x.statementDate) : "",
+      closingBalance:Math.max(0, sNum(x.closingBalance, 0)),
+      limit:Math.max(0, sNum(x.limit, 0)),
+      available:sNum(x.available, 0),
+      minPayment:Math.max(0, sNum(x.minPayment, 0)),
+      dueDate: x.dueDate ? sDate(x.dueDate) : "",
+      apr:Math.min(100, Math.max(0, sNum(x.apr, 0))),
+      importedAt:sStr(x.importedAt, 40),
+      source:x.source === "pdf" ? "pdf" : "manual"
+    }));
+
+  const loans = (Array.isArray(d.loans) ? d.loans : []).slice(0, 100).map(l => l && {
+    id:sId(l.id), name:sStr(l.name, 60), lender:sStr(l.lender, 60),
+    currency:l.currency === "INR" ? "INR" : "USD",
+    balance:Math.max(0, sNum(l.balance, 0)),
+    apr:Math.min(100, Math.max(0, sNum(l.apr, 0))),
+    minPayment:Math.max(0, sNum(l.minPayment, 0)),
+    confirmedAt:l.confirmedAt ? sDate(l.confirmedAt) : ""
+  }).filter(l => l && l.id);
+
+  const accounts = (Array.isArray(d.accounts) ? d.accounts : []).slice(0, 200).map(a => a && {
+    id:sId(a.id), bank:sStr(a.bank, 40), name:sStr(a.name, 40),
+    type:sStr(a.type, 24), currency:a.currency === "INR" ? "INR" : "USD",
+    balance:sNum(a.balance, 0),
+    confirmedAt:a.confirmedAt ? sDate(a.confirmedAt) : ""
+  }).filter(a => a && a.id);
+
   return {
     version:1, sources, bills, payments,
+    cards, spends, statements, loans, accounts,
     theme:      d.theme === "dark" || d.theme === "light" ? d.theme : null,
     viewMode:   d.viewMode === "tiles" ? "tiles" : "list",
     startPeriod:sPeriod(d.startPeriod),
@@ -1177,14 +1372,102 @@ function historyHTML(){
   return out;
 }
 
+/* ── render: cards ──────────────────────────────────────────────── */
+const LEVEL_LABEL = {safe:"Plenty left", watch:"Getting used", tight:"Nearly full",
+                     maxed:"No room", none:"No limit set"};
+
+/** What is actually missing, said precisely. */
+function cardGap(c, s){
+  if(!s.limit && !c.confirmedAt) return "Needs a limit and a balance";
+  if(!s.limit)      return "Needs a credit limit";
+  if(!c.confirmedAt) return "Needs a balance";
+  return null;
+}
+function cardsHTML(){
+  const cards = activeCards();
+  if(!cards.length){
+    return '<div class="empty"><b>No cards yet</b>' +
+      'Add a card with its limit and balance, and this page will tell you what is safe to swipe.' +
+      '<div class="welcome"><button class="primary" data-act="addcard">Add your first card</button></div></div>';
+  }
+  const states = cards.map(c => [c, cardState(c)]);
+  const need = states.filter(([c,s]) => s.awaiting || cardGap(c,s)).length;
+
+  // headline: total room across cards we can actually vouch for, per currency
+  const byCur = {};
+  for(const [c,s] of states){
+    if(s.avail == null) continue;
+    const g = byCur[c.currency] || (byCur[c.currency] = {avail:0, limit:0, shaky:0});
+    g.avail += s.avail; g.limit += s.limit; if(s.shaky) g.shaky++;
+  }
+  let out = '<div class="summary">' + Object.entries(byCur).map(([cur,g]) =>
+    '<div class="tot-row"><div class="tot-head">' +
+      '<span class="tot-cur">' + (cur === "INR" ? "India" : "US") + ' &middot; room to spend</span>' +
+      '<span class="tot-amt num">' + money(Math.max(0, g.avail), cur) + '</span></div>' +
+      '<div class="meter"><i style="width:' +
+        (g.limit ? Math.min(100, ((g.limit - g.avail) / g.limit) * 100).toFixed(1) : 0) + '%"></i></div>' +
+      '<div class="tot-sub">of ' + money(g.limit, cur) + ' total limit' +
+        (g.shaky ? ' &middot; ' + g.shaky + ' figure' + (g.shaky===1?'':'s') + ' not current' : '') +
+      '</div></div>').join("") + '</div>';
+
+  if(need){
+    out += '<div class="nag"><div><b>' + need + ' card' + (need===1?'':'s') +
+      ' need' + (need===1?'s':'') + ' a current balance</b>' +
+      '<span>Until then the figures below are estimates, not something to swipe on.</span></div>' +
+      '<button data-act="fixstale">Fix</button></div>';
+  }
+
+  out += cardGroups().map(([cur, list]) =>
+    (cardGroups().length > 1
+      ? '<div class="group-head" style="padding-top:14px"><span class="eyebrow">' +
+        (cur === "INR" ? "India ₹" : "US $") + '</span><span class="rule"></span>' +
+        '<span class="cnt">' + list.length + '</span></div>'
+      : '') +
+    '<div class="cardlist">' + list.map(c => {
+      const s = cardState(c);
+      const gap = cardGap(c, s);
+      const over = s.avail != null && s.avail < 0;
+      const head = s.avail == null ? "—"
+                 : over ? "−" + money(Math.abs(s.avail), cur)
+                 : money(s.avail, cur);
+      let note;
+      if(gap)              note = gap;
+      else if(s.awaiting)  note = 'Statement not filed' + (s.dueSince ? ' &middot; ' + s.dueSince + 'd overdue' : '');
+      else if(s.age === 0) note = 'Confirmed today';
+      else if(s.age === 1) note = 'Confirmed yesterday';
+      else                 note = 'Confirmed ' + s.age + ' days ago';
+      return '<button class="cardrow" data-card="' + esc(c.id) + '" data-level="' + s.level +
+          '"' + (s.shaky ? ' data-shaky="1"' : '') + (over ? ' data-over="1"' : '') + '>' +
+        '<span class="cardrow-top">' +
+          '<span class="cardname">' + esc(c.name) + '</span>' +
+          '<span class="cardavail num">' + head +
+            (over ? '<em>over limit</em>' : s.shaky && s.avail != null ? '<em>approx</em>' : '') +
+          '</span>' +
+        '</span>' +
+        '<span class="cardbar"><i style="width:' +
+          (s.util == null ? 0 : Math.min(100, s.util * 100).toFixed(1)) + '%"></i></span>' +
+        '<span class="cardrow-bot">' +
+          '<span class="chip-level">' + (s.util == null ? LEVEL_LABEL.none
+              : Math.round(s.util * 100) + '% used &middot; ' + LEVEL_LABEL[s.level]) + '</span>' +
+          '<span class="cardnote">' + note + '</span>' +
+        '</span></button>';
+    }).join("") + '</div>').join("");
+
+  out += '<div class="cardacts"><button class="ghost" data-act="addcard">Add a card</button>' +
+    '<button class="ghost" data-act="refreshall">Update all balances</button></div>';
+  return out;
+}
+
 /* ── render: main ───────────────────────────────────────────────── */
 function render(){
   $("#mLabel").innerHTML = MONTHS[UI.m] + " " + UI.y +
     (UI.y === now.getFullYear() && UI.m === now.getMonth() ? "<small>this month</small>" : "<small>&nbsp;</small>");
   document.querySelectorAll(".tab").forEach(t =>
     t.setAttribute("aria-selected", String(t.dataset.view === UI.view)));
-  $("#main").innerHTML = UI.view === "ledger" ? ledgerHTML() : historyHTML();
+  $("#main").innerHTML = UI.view === "cards" ? cardsHTML()
+                       : UI.view === "ledger" ? ledgerHTML() : historyHTML();
   $("#addBtn").style.display = UI.view === "ledger" ? "flex" : "none";
+  $(".month-nav").style.display = UI.view === "cards" ? "none" : "flex";
   $("#dataBtn").classList.toggle("unsaved", isDirty());
   $("#dataBtn").setAttribute("aria-label",
     isDirty() ? "Backup and data — unsaved changes" : "Backup and data");
@@ -1440,6 +1723,8 @@ function adopt(d){
   Object.assign(S, {
     version:1,
     sources: c.sources, bills: c.bills, payments: c.payments,
+    cards: c.cards, spends: c.spends, statements: c.statements,
+    loans: c.loans, accounts: c.accounts,
     startPeriod: c.startPeriod, viewMode: c.viewMode,
     theme: c.theme, updatedAt: c.updatedAt
   });
@@ -1495,6 +1780,11 @@ function openSheet(billId, period){
   $("#sheet").classList.add("on");
 }
 function closeSheet(){
+  if(UI.cardDraft){
+    const c = cardOf(UI.cardId);
+    if(c && !c.name.trim()){ S.cards = S.cards.filter(x => x.id !== c.id); save(); }
+    UI.cardDraft = false;
+  }
   if(UI.draft){
     const b = billOf(UI.billId);
     if(b && !b.name.trim()){
@@ -1506,7 +1796,7 @@ function closeSheet(){
   }
   $("#scrim").classList.remove("on");
   $("#sheet").classList.remove("on");
-  UI.billId = null;
+  UI.billId = null; UI.cardId = null; UI.dataView = null;
   render();
 }
 
@@ -1731,6 +2021,177 @@ function wireSheet(b, pk){
     S.payments = S.payments.filter(x => x.billId !== b.id);
     UI.draft = false; save(); toast("Deleted"); closeSheet();
   });
+}
+
+/* ── card sheet ─────────────────────────────────────────────────── */
+function newCard(){
+  const c = {
+    id:uid(), name:"", issuer:"", currency:"USD", billId:"",
+    limit:0, apr:0, statementDay:0,
+    balance:0, confirmedAt:todayISO, confirmedFrom:"manual",
+    minPayment:0, dueDate:"", archived:false
+  };
+  S.cards.push(c); save();
+  return c;
+}
+function openCard(cardId){
+  UI.cardId = cardId; UI.dataView = null;
+  renderCardSheet();
+  $("#scrim").classList.add("on");
+  $("#sheet").classList.add("on");
+}
+function renderCardSheet(){
+  const c = cardOf(UI.cardId);
+  if(!c) return closeSheet();
+  const s = cardState(c);
+  $("#sheetTitle").textContent = c.name || "New card";
+
+  const billOptions = '<option value="">Not linked</option>' +
+    S.bills.filter(b => !b.archived).map(b =>
+      '<option value="' + esc(b.id) + '"' + (b.id === c.billId ? " selected" : "") + '>' +
+      esc(b.name) + '</option>').join("");
+  const dayOptions = '<option value="0">Not set</option>' +
+    Array.from({length:31}, (_,i) =>
+      '<option value="' + (i+1) + '"' + (i+1 === c.statementDay ? " selected" : "") + '>' +
+      (i+1) + '</option>').join("");
+
+  $("#sheetBody").innerHTML =
+    '<div class="sec"><span class="eyebrow">Right now</span>' +
+      '<div class="paystate ' + (s.level === "maxed" ? "part" : s.level === "safe" ? "done" : "") + '">' +
+        '<div class="paystate-top"><span>' +
+          (s.avail == null ? "Set a limit to see this" : "Room to spend") + '</span>' +
+          '<b class="num">' + (s.avail == null ? "—" : money(Math.max(0, s.avail), c.currency)) + '</b></div>' +
+        (s.limit ? '<span class="pbar big"><i style="width:' +
+          Math.min(100, (s.util || 0) * 100).toFixed(1) + '%"></i></span>' : '') +
+        '<div class="paystate-sub">' +
+          (s.limit ? Math.round((s.util || 0) * 100) + '% of ' + money(s.limit, c.currency) + ' used'
+                   : 'No credit limit recorded') + '</div></div>' +
+
+      '<div class="mini" style="margin-top:11px">' +
+        '<div class="mini-row"><span>Confirmed balance</span>' +
+          '<span class="a num">' + money(s.confirmed, c.currency) + '</span></div>' +
+        '<div class="mini-row"><span class="d" style="width:auto">as of</span>' +
+          '<span class="a" style="font-weight:500;color:var(--muted)">' +
+          (c.confirmedAt ? shortDate(c.confirmedAt) + (s.age ? ' · ' + s.age + 'd ago' : ' · today') : 'never') +
+          (c.confirmedFrom === "statement" ? ' · statement' : '') + '</span></div>' +
+        (s.moved
+          ? '<div class="mini-row"><span>Estimated today</span>' +
+            '<span class="a num" style="color:var(--accent)">' + money(s.estimate, c.currency) + '</span></div>' +
+            (s.interest >= 1 ? '<div class="mini-row"><span class="d" style="width:auto">est. interest</span>' +
+              '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.interest, c.currency) + '</span></div>' : '') +
+            (s.spent ? '<div class="mini-row"><span class="d" style="width:auto">logged spend</span>' +
+              '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.spent, c.currency) + '</span></div>' : '') +
+            (s.repaid ? '<div class="mini-row"><span class="d" style="width:auto">payments</span>' +
+              '<span class="a" style="font-weight:500;color:var(--ok)">−' + money(s.repaid, c.currency) + '</span></div>' : '')
+          : '') +
+      '</div>' +
+      (s.moved ? '<div class="hint" style="margin-top:8px">The estimate adds interest and anything logged since the confirmation. Only the confirmed figure comes from your card.</div>' : '') +
+      '<button class="primary" id="cardConfirm" style="margin-top:11px">Update balance from my card app</button>' +
+      '<button class="ghost" id="cardSpend">Log a spend</button>' +
+    '</div>' +
+
+    '<div class="sec"><span class="eyebrow">Card settings</span><div class="fields">' +
+      '<div class="field"><label for="cName">Name</label>' +
+        '<input type="text" id="cName" placeholder="e.g. Apple Card" value="' + esc(c.name) + '"></div>' +
+      '<div class="two">' +
+        '<div class="field"><label for="cLimit">Credit limit</label>' +
+          '<input type="number" inputmode="decimal" step="1" id="cLimit" value="' + (c.limit || 0) + '"></div>' +
+        '<div class="field"><label for="cCur">Currency</label><select id="cCur">' +
+          '<option value="USD"' + (c.currency==="USD"?" selected":"") + '>US $</option>' +
+          '<option value="INR"' + (c.currency==="INR"?" selected":"") + '>India ₹</option>' +
+        '</select></div></div>' +
+      '<div class="two">' +
+        '<div class="field"><label for="cApr">APR %</label>' +
+          '<input type="number" inputmode="decimal" step="0.01" id="cApr" placeholder="24.99" value="' + (c.apr || "") + '"></div>' +
+        '<div class="field"><label for="cStmt">Statement day</label>' +
+          '<select id="cStmt">' + dayOptions + '</select></div></div>' +
+      '<div class="hint">Setting a statement day turns on the monthly reminder to file that card’s statement.</div>' +
+      '<div class="field"><label for="cBill">Paid by which bill</label>' +
+        '<select id="cBill">' + billOptions + '</select></div>' +
+      '<div class="hint">Link it and payments you record in the ledger come off this balance automatically.</div>' +
+    '</div></div>' +
+
+    '<div class="sec">' +
+      '<button class="ghost" id="cardArch">' + (c.archived ? "Restore this card" : "Archive (hide it)") + '</button>' +
+      '<button class="danger" id="cardDel">Delete card and its statements</button>' +
+    '</div>';
+
+  wireCardSheet(c);
+}
+function wireCardSheet(c){
+  const body = $("#sheetBody");
+  const q = id => body.querySelector(id);
+  const patch = () => { save(); render(); };
+  const reflow = () => { renderCardSheet(); render(); };
+
+  q("#cardConfirm").onclick = () => {
+    const v = prompt("Balance shown in your " + (c.name || "card") + " app right now:",
+                     String(c.balance || 0));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n < 0) return toast("Enter a number");
+    c.balance = n; c.confirmedAt = todayISO; c.confirmedFrom = "manual";
+    S.spends = S.spends.filter(x => x.cardId !== c.id);   // superseded by a fresh truth
+    patch(); reflow(); toast("Balance confirmed");
+  };
+  q("#cardSpend").onclick = () => {
+    const v = prompt("Amount just spent on " + (c.name || "this card") + ":", "");
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
+    S.spends.push({id:uid(), cardId:c.id, date:todayISO, amount:n, note:""});
+    patch(); reflow(); toast("Logged " + money(n, c.currency));
+  };
+
+  q("#cName").onchange  = e => { c.name = e.target.value.trim(); $("#sheetTitle").textContent = c.name || "New card"; patch(); };
+  q("#cLimit").onchange = e => { c.limit = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
+  q("#cCur").onchange   = e => { c.currency = e.target.value; reflow(); patch(); };
+  q("#cApr").onchange   = e => { c.apr = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
+  q("#cStmt").onchange  = e => { c.statementDay = parseInt(e.target.value,10) || 0; reflow(); patch(); };
+  q("#cBill").onchange  = e => { c.billId = e.target.value; reflow(); patch(); };
+
+  q("#cardArch").onclick = () => { c.archived = !c.archived; save(); closeSheet(); };
+  q("#cardDel").onclick = () => {
+    if(!confirm('Delete "' + (c.name || "this card") + '" with its statements and logged spends?')) return;
+    S.cards  = S.cards.filter(x => x.id !== c.id);
+    S.spends = S.spends.filter(x => x.cardId !== c.id);
+    S.statements = S.statements.filter(x => x.cardId !== c.id);
+    save(); closeSheet(); toast("Deleted");
+  };
+}
+
+/** One screen, every card, one number each — the fastest honest refresh. */
+function openRefreshAll(){
+  UI.cardId = null; UI.dataView = "refresh";
+  $("#sheetTitle").textContent = "Update balances";
+  const cards = cardsByAvailable();
+  $("#sheetBody").innerHTML =
+    '<div class="sec">' +
+      '<div class="hint" style="margin-bottom:12px">Open each card app and type what it shows. Anything you leave alone keeps its current figure.</div>' +
+      '<div class="fields">' + cards.map(c => {
+        const s = cardState(c);
+        return '<div class="field"><label for="rf-' + esc(c.id) + '">' + esc(c.name) +
+          '<span style="float:right;font-weight:500;color:var(--muted)">' +
+          (c.confirmedAt ? (s.age === 0 ? "today" : s.age + "d ago") : "never") + '</span></label>' +
+          '<input type="number" inputmode="decimal" step="0.01" id="rf-' + esc(c.id) +
+          '" data-refresh="' + esc(c.id) + '" value="' + (c.balance || 0) + '"></div>';
+      }).join("") + '</div>' +
+      '<button class="primary" id="refreshSave" style="margin-top:13px">Save all as confirmed today</button>' +
+    '</div>';
+  $("#sheetBody").querySelector("#refreshSave").onclick = () => {
+    let n = 0;
+    $("#sheetBody").querySelectorAll("[data-refresh]").forEach(inp => {
+      const c = cardOf(inp.dataset.refresh); if(!c) return;
+      const v = parseFloat(inp.value);
+      if(!Number.isFinite(v) || v < 0) return;
+      if(Math.abs(v - (c.balance || 0)) > 0.005 || c.confirmedAt !== todayISO) n++;
+      c.balance = v; c.confirmedAt = todayISO; c.confirmedFrom = "manual";
+      S.spends = S.spends.filter(x => x.cardId !== c.id);
+    });
+    save(); closeSheet(); toast(n ? n + " card" + (n===1?"":"s") + " updated" : "Nothing changed");
+  };
+  $("#scrim").classList.add("on");
+  $("#sheet").classList.add("on");
 }
 
 /* ── data sheet: sync section ───────────────────────────────────── */
@@ -1964,6 +2425,8 @@ $("#importFile").onchange = e => {
         d.payments.length + " payments from this file?" + when)) return;
       Object.assign(S, {
         version:1, sources:d.sources, bills:d.bills, payments:d.payments,
+        cards:d.cards, spends:d.spends, statements:d.statements,
+        loans:d.loans, accounts:d.accounts,
         startPeriod:d.startPeriod, viewMode:d.viewMode, theme:d.theme
       });
       S.lastBackup = {at:d.exportedAt || new Date().toISOString(), sig:signature()};
@@ -1984,10 +2447,19 @@ $("#main").addEventListener("toggle", e => {
 }, true);
 
 $("#main").addEventListener("click", e => {
+  const card = e.target.closest("[data-card]");
+  if(card){ openCard(card.dataset.card); return; }
   const act = e.target.closest("[data-act]");
   if(act){
-    if(act.dataset.act === "restore") $("#importFile").click();
-    if(act.dataset.act === "add") $("#addBtn").click();
+    const a = act.dataset.act;
+    if(a === "restore") $("#importFile").click();
+    if(a === "add") $("#addBtn").click();
+    if(a === "addcard"){
+      const c = newCard(); UI.cardDraft = true; openCard(c.id);
+      setTimeout(() => { const el = $("#cName"); if(el) el.focus(); }, 280);
+    }
+    if(a === "refreshall") openRefreshAll();
+    if(a === "fixstale") openRefreshAll();
     return;
   }
   const mode = e.target.closest("[data-mode]");
