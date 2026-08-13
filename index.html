@@ -406,6 +406,23 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
   overflow:hidden; text-overflow:ellipsis}
 .cardrow[data-shaky="1"] .cardnote{color:var(--warn); font-weight:600}
 .cardacts{display:flex; flex-direction:column; gap:8px; padding:14px 16px 4px}
+.planbody{padding:4px 16px 16px; display:flex; flex-direction:column; gap:14px}
+.planblock{border:1px solid var(--line); border-radius:12px; padding:12px 13px; background:var(--surface)}
+.planhead{display:flex; align-items:baseline; gap:10px; font-size:12px; color:var(--muted);
+  margin-bottom:9px}
+.planhead b{margin-left:auto; font-size:19px; font-weight:600; color:var(--ink); letter-spacing:-.02em}
+.planhead b em, .mini-row .a em{font-style:normal; font-size:10px; font-weight:600; color:var(--muted);
+  margin-left:2px}
+.utilshift{display:flex; align-items:baseline; gap:8px; margin-bottom:10px;
+  padding:9px 11px; border-radius:9px; background:var(--surface-2); border:1px solid var(--line)}
+.us-from{font-size:17px; font-weight:600; color:var(--muted); text-decoration:line-through;
+  text-decoration-thickness:1px}
+.us-arrow{color:var(--muted); font-size:13px}
+.us-to{font-size:21px; font-weight:600; color:var(--accent); letter-spacing:-.02em}
+.us-to.good{color:var(--ok)}
+.us-label{margin-left:auto; font-size:10.5px; color:var(--muted); text-align:right; max-width:96px; line-height:1.25}
+.planblock .mini-row .d{color:var(--muted); font-size:11.5px}
+.planblock .paydel{height:34px; width:28px}
 .cardacts .ghost{margin-top:0}
 
 /* ── settled collapser ──────────────────────────────────────────── */
@@ -908,25 +925,30 @@ function cardState(c){
   const avail    = limit ? limit - estimate : null;
   const util     = limit ? estimate / limit : null;
 
-  // has this cycle's statement been filed?
-  let awaiting = false, dueSince = null;
-  if(c.statementDay){
-    const cut = new Date(t.getFullYear(), t.getMonth(), Math.min(c.statementDay, daysIn(t.getFullYear(), t.getMonth())));
-    const period = cut <= t ? periodKey(t.getFullYear(), t.getMonth())
-                            : periodKey(t.getMonth() ? t.getFullYear() : t.getFullYear()-1, (t.getMonth()+11)%12);
-    awaiting = !S.statements.some(s => s.cardId === c.id && s.period === period);
-    if(awaiting && cut <= t) dueSince = daysBetween(cut, t);
+  // How much the figure can be trusted is a question of how old it is.
+  // statementDay is only a hint about *when* refreshing pays off most: the
+  // day after a statement cuts, the card app shows a freshly settled figure.
+  const fresh = age == null ? "never" : age <= 3 ? "fresh" : age <= 7 ? "aging" : "stale";
+  let justCut = false;
+  if(c.statementDay && age != null){
+    const cut = new Date(t.getFullYear(), t.getMonth(),
+                         Math.min(c.statementDay, daysIn(t.getFullYear(), t.getMonth())));
+    if(cut <= t){
+      const sinceCut = daysBetween(cut, t);
+      justCut = sinceCut <= 3 && (conf == null || conf < cut);   // cut, not yet re-read
+    }
   }
   const unknown = !c.confirmedAt || !limit;
+  const needsUpdate = unknown || fresh === "stale" || justCut;
   const level = util == null ? "none"
               : util >= 1    ? "maxed"
               : util >= 0.8  ? "tight"
               : util >= 0.3  ? "watch" : "safe";
   return {
     limit, estimate, avail, util, level, age, interest, spent, repaid,
-    confirmed: c.balance || 0, awaiting, dueSince, unknown,
-    // an estimate stops being worth trusting once it is old or unfiled
-    shaky: unknown || awaiting || (age != null && age > 21),
+    confirmed: c.balance || 0, fresh, justCut, needsUpdate, unknown,
+    // stop presenting a figure as solid once it has drifted out of date
+    shaky: unknown || fresh === "stale" || fresh === "never",
     moved: spent > 0 || repaid > 0 || interest >= 1
   };
 }
@@ -1394,7 +1416,7 @@ function cardsHTML(){
       '<div class="welcome"><button class="primary" data-act="addcard">Add your first card</button></div></div>';
   }
   const states = cards.map(c => [c, cardState(c)]);
-  const need = states.filter(([c,s]) => s.awaiting || cardGap(c,s)).length;
+  const need = states.filter(([c,s]) => s.needsUpdate || cardGap(c,s)).length;
 
   // headline: total room across cards we can actually vouch for, per currency
   const byCur = {};
@@ -1435,7 +1457,8 @@ function cardsHTML(){
                  : money(s.avail, cur);
       let note;
       if(gap)              note = gap;
-      else if(s.awaiting)  note = 'Statement not filed' + (s.dueSince ? ' &middot; ' + s.dueSince + 'd overdue' : '');
+      else if(s.justCut)   note = 'Statement just cut &middot; re-read it';
+      else if(s.fresh === 'stale') note = 'Stale &middot; ' + s.age + ' days old';
       else if(s.age === 0) note = 'Confirmed today';
       else if(s.age === 1) note = 'Confirmed yesterday';
       else                 note = 'Confirmed ' + s.age + ' days ago';
@@ -1456,9 +1479,100 @@ function cardsHTML(){
         '</span></button>';
     }).join("") + '</div>').join("");
 
+  out += planHTML();
   out += '<div class="cardacts"><button class="ghost" data-act="addcard">Add a card</button>' +
     '<button class="ghost" data-act="refreshall">Update all balances</button>' +
     '<button class="ghost" data-act="copyai">Copy a snapshot for an AI</button></div>';
+  return out;
+}
+
+/** Cash on hand, the split it buys, and what each card costs to carry. */
+function planHTML(){
+  const curs = [...new Set(activeCards().map(c => c.currency))];
+  if(!curs.length) return "";
+  let out = "";
+
+  for(const cur of curs){
+    const cash = cashFor(cur);
+    const budget = S.payBudget && S.payBudget[cur] != null ? S.payBudget[cur] : cash;
+    const plan = coachPlan(cur, budget);
+    const age = cashAge(cur);
+    const accts = S.accounts.filter(a => a.currency === cur);
+
+    out += '<details class="fold" data-fold="plan-' + cur + '"' +
+      (S.planOpen ? ' open' : '') + '>' +
+      '<summary><span class="eyebrow">Plan' + (curs.length > 1 ? ' &middot; ' + cur : '') + '</span>' +
+      '<span class="foldsum">' + (plan ? Math.round(plan.startUtil * 100) + '% utilisation' : 'no limits set') +
+      '</span><span class="chev" aria-hidden="true"></span></summary>' +
+      '<div class="planbody">';
+
+    // --- cash on hand ---
+    out += '<div class="planblock"><div class="planhead"><span>Cash I can spend</span>' +
+      '<b class="num">' + money(cash, cur) + '</b></div>';
+    out += accts.length
+      ? '<div class="mini">' + accts.map(a =>
+          '<div class="mini-row"><span>' + esc(a.bank ? a.bank + ' · ' : '') + esc(a.name) + '</span>' +
+          '<span class="a num">' + money(a.balance || 0, cur) + '</span>' +
+          '<button class="paydel" data-editacct="' + esc(a.id) + '" aria-label="Edit ' + esc(a.name) + '">' +
+          '<svg viewBox="0 0 24 24"><path d="M4 20h16M13.5 5.5l3 3L8 17H5v-3z"/></svg></button></div>').join("") +
+        '</div>' + (age != null && age > 7
+          ? '<div class="hint" style="color:var(--warn);margin-top:7px">Cash figures are ' + age + ' days old.</div>' : '')
+      : '<div class="hint">Add the accounts you would actually pay from, so the split below is real.</div>';
+    out += '<button class="ghost" data-act="addacct" style="margin-top:9px">Add an account</button></div>';
+
+    if(plan){
+      // --- the split ---
+      out += '<div class="planblock"><div class="planhead"><span>If I pay</span>' +
+        '<b class="num">' + money(plan.spent, cur) + '</b></div>' +
+        '<div class="utilshift"><span class="us-from num">' + Math.round(plan.startUtil * 100) + '%</span>' +
+        '<span class="us-arrow">→</span>' +
+        '<span class="us-to num' + (plan.endUtil < UTIL_GOOD ? ' good' : '') + '">' +
+          Math.round(plan.endUtil * 100) + '%</span>' +
+        '<span class="us-label">overall utilisation</span></div>' +
+        '<div class="utilshift"><span class="us-from num">' + Math.round(plan.startMax * 100) + '%</span>' +
+        '<span class="us-arrow">→</span>' +
+        '<span class="us-to num' + (plan.maxUtil < UTIL_TIGHT ? ' good' : '') + '">' +
+          Math.round(plan.maxUtil * 100) + '%</span>' +
+        '<span class="us-label">worst single card</span></div>' +
+        '<div class="seg" id="modeSeg" style="margin-bottom:10px">' +
+          '<button data-mode2="score" aria-pressed="' + (plan.mode==="score") + '">Lower utilisation</button>' +
+          '<button data-mode2="interest" aria-pressed="' + (plan.mode==="interest") + '">Save interest</button>' +
+        '</div>';
+      out += plan.steps.length
+        ? '<div class="mini">' + plan.steps.map(st =>
+            '<div class="mini-row"><span>' + esc(st.name) + '</span>' +
+            '<span class="d" style="width:auto;margin-left:8px">' + st.from + '% → ' + st.to + '%</span>' +
+            '<span class="a num">' + money(st.amount, cur) + '</span></div>').join("") + '</div>'
+        : '<div class="hint">Nothing to pay down — or no cash recorded yet.</div>';
+      if(plan.saved > 1)
+        out += '<div class="hint" style="margin-top:7px">Cuts roughly ' + money(plan.saved, cur) +
+               ' a year off interest.</div>';
+      if(plan.leftover > 1)
+        out += '<div class="hint" style="margin-top:7px">' + money(plan.leftover, cur) + ' left over.</div>';
+      if(plan.overLimit)
+        out += '<div class="hint" style="color:var(--bad);margin-top:7px">' + plan.overLimit +
+               ' card' + (plan.overLimit===1?'':'s') + ' would still be over limit.</div>';
+      out += '<div class="field" style="margin-top:11px"><label for="bg-' + cur + '">Change the amount</label>' +
+        '<input type="number" inputmode="decimal" step="1" id="bg-' + cur + '" data-budget="' + cur +
+        '" value="' + Math.round(budget) + '"></div>' +
+        '<div class="hint">Under 30% overall is the usual credit-scoring threshold; over 80% is where cards start declining.</div>' +
+      '</div>';
+
+      // --- carrying cost ---
+      const po = payoffOrder(cur);
+      if(po.length){
+        const yr = po.reduce((n,r) => n + r.monthly, 0) * 12;
+        out += '<div class="planblock"><div class="planhead"><span>Costs most to carry</span>' +
+          '<b class="num">' + money(yr, cur) + '<em>/yr</em></b></div><div class="mini">' +
+          po.slice(0, 8).map(r =>
+            '<div class="mini-row"><span>' + esc(r.c.name) + '</span>' +
+            '<span class="d" style="width:auto;margin-left:8px">' + (r.apr ? r.apr + '%' : 'no APR') + '</span>' +
+            '<span class="a num">' + money(r.monthly, cur) + '<em>/mo</em></span></div>').join("") +
+          '</div><div class="hint" style="margin-top:7px">Interest is an estimate from the APR you entered. Clearing the top of this list saves the most.</div></div>';
+      }
+    }
+    out += '</div></details>';
+  }
   return out;
 }
 
@@ -1787,6 +1901,12 @@ function openSheet(billId, period){
   $("#sheet").classList.add("on");
 }
 function closeSheet(){
+  if(UI.acctDraft){
+    const a = S.accounts.find(x => x.id === UI.acctId);
+    if(a && !a.name.trim() && !a.bank.trim() && !a.balance)
+      S.accounts = S.accounts.filter(x => x.id !== a.id), save();
+    UI.acctDraft = false;
+  }
   if(UI.cardDraft){
     const c = cardOf(UI.cardId);
     if(c && !c.name.trim()){ S.cards = S.cards.filter(x => x.id !== c.id); save(); }
@@ -1803,7 +1923,7 @@ function closeSheet(){
   }
   $("#scrim").classList.remove("on");
   $("#sheet").classList.remove("on");
-  UI.billId = null; UI.cardId = null; UI.sheet = null;
+  UI.billId = null; UI.cardId = null; UI.acctId = null; UI.sheet = null;
   render();
 }
 
@@ -2030,6 +2150,99 @@ function wireSheet(b, pk){
   });
 }
 
+/* ── cash on hand ───────────────────────────────────────────────────
+   Not net worth — just what is actually available to pay cards with.  */
+function cashFor(cur){
+  return S.accounts.filter(a => a.currency === cur)
+                   .reduce((n,a) => n + (a.balance || 0), 0);
+}
+function cashAge(cur){
+  const list = S.accounts.filter(a => a.currency === cur && a.confirmedAt);
+  if(!list.length) return null;
+  const t = new Date(); t.setHours(0,0,0,0);
+  return Math.max(...list.map(a => daysBetween(new Date(a.confirmedAt + "T00:00:00"), t)));
+}
+
+/* ── utilisation coaching ───────────────────────────────────────────
+   Arithmetic, not advice: given an amount you are willing to put on the
+   cards, work out the split that buys the most utilisation improvement,
+   and say what it does to the number. Thresholds first (over-limit, then
+   80%, then 30% overall), because those are where the damage sits.     */
+const UTIL_GOOD = 0.30, UTIL_TIGHT = 0.80;
+
+function coachPlan(cur, budget, mode){
+  mode = mode || S.payMode || "score";
+  const rows = activeCards()
+    .filter(c => c.currency === cur && c.limit > 0)
+    .map(c => { const s = cardState(c); return {c, bal:s.estimate, limit:s.limit, util:s.util, apr:c.apr || 0}; });
+  if(!rows.length) return null;
+
+  const limitSum = rows.reduce((n,r) => n + r.limit, 0);
+  const startBal = rows.reduce((n,r) => n + r.bal, 0);
+  const startMax = rows.reduce((n,r) => Math.max(n, r.limit ? r.bal / r.limit : 0), 0);
+  const pay = new Map();
+  let cash = Math.max(0, budget);
+
+  const put = (r, amt) => {
+    amt = Math.min(amt, cash, r.bal);
+    if(amt <= 0.5) return;
+    pay.set(r.c.id, (pay.get(r.c.id) || 0) + amt);
+    r.bal -= amt; cash -= amt;
+  };
+  // 1. anything over its limit — the only state that gets a card declined
+  rows.filter(r => r.bal > r.limit).sort((a,b) => (b.bal-b.limit) - (a.bal-a.limit))
+      .forEach(r => put(r, r.bal - r.limit));
+  // 2. down to 80%, worst first
+  rows.filter(r => r.bal > r.limit * UTIL_TIGHT).sort((a,b) => b.bal/b.limit - a.bal/a.limit)
+      .forEach(r => put(r, r.bal - r.limit * UTIL_TIGHT));
+  // Past that point the two goals genuinely diverge, so the caller picks.
+  if(mode === "score"){
+    // 3. keep buying down the worst percentage until overall is under 30%
+    let guard = 0;
+    while(cash > 0.5 && rows.reduce((n,r) => n + r.bal, 0) > limitSum * UTIL_GOOD && guard++ < 200){
+      const r = rows.filter(x => x.bal > 0).sort((a,b) => b.bal/b.limit - a.bal/a.limit)[0];
+      if(!r) break;
+      const need = rows.reduce((n,x) => n + x.bal, 0) - limitSum * UTIL_GOOD;
+      put(r, Math.min(need, Math.max(1, r.bal - r.limit * UTIL_GOOD) || r.bal));
+    }
+  }
+  // 4. remainder goes where the debt costs most to carry
+  if(cash > 0.5)
+    rows.filter(r => r.bal > 0).sort((a,b) => b.apr - a.apr).forEach(r => put(r, r.bal));
+
+  const endBal = rows.reduce((n,r) => n + r.bal, 0);
+  // what the split takes off the yearly interest bill
+  const saved = [...pay.entries()].reduce((n,[id,amt]) => {
+    const r = rows.find(x => x.c.id === id);
+    return n + amt * (r ? r.apr : 0) / 100;
+  }, 0);
+  // a dollar paid anywhere moves the overall number identically, so what
+  // actually separates the two strategies is the worst single card
+  const maxUtil = rows.reduce((n,r) => Math.max(n, r.limit ? r.bal / r.limit : 0), 0);
+  return {
+    cur, limitSum, mode, saved, maxUtil, startMax,
+    startUtil: limitSum ? startBal / limitSum : 0,
+    endUtil:   limitSum ? endBal   / limitSum : 0,
+    spent: Math.max(0, budget) - cash, leftover: cash,
+    steps: rows.filter(r => pay.get(r.c.id))
+               .map(r => ({name:r.c.name, amount:pay.get(r.c.id),
+                           from:Math.round((r.bal + pay.get(r.c.id)) / r.limit * 100),
+                           to:Math.round(r.bal / r.limit * 100)}))
+               .sort((a,b) => b.from - a.from),   // worst card first = do this first
+    overLimit: rows.filter(r => r.bal > r.limit).length
+  };
+}
+
+/** What each card costs to carry, dearest first. */
+function payoffOrder(cur){
+  return activeCards()
+    .filter(c => c.currency === cur)
+    .map(c => { const s = cardState(c); return {c, bal:s.estimate, apr:c.apr || 0,
+                 monthly: (s.estimate * (c.apr || 0) / 100) / 12}; })
+    .filter(r => r.bal > 0)
+    .sort((a,b) => b.apr - a.apr || b.bal - a.bal);
+}
+
 /* ── snapshot for an AI ─────────────────────────────────────────────
    Compact markdown rather than raw JSON: an LLM reads a table far more
    reliably than a nested object, and it costs a fraction of the tokens.
@@ -2047,9 +2260,10 @@ function aiSnapshot(){
     const rows = list.map(c => [c, cardState(c)]);
     L.push("## Credit cards (" + (cur === "INR" ? "INR" : "USD") + ")");
     L.push("");
-    L.push("| Card | Limit | Confirmed bal | Est. today | Available | Used | APR | Confirmed |");
-    L.push("|---|---|---|---|---|---|---|---|");
+    L.push("| Card | Limit | Confirmed bal | Est. today | Available | Used | APR | Min pay | Stmt day | Confirmed | Paid by bill |");
+    L.push("|---|---|---|---|---|---|---|---|---|---|---|");
     for(const [c,s] of rows){
+      const bill = c.billId ? (S.bills.find(b => b.id === c.billId) || {}).name : null;
       L.push("| " + [
         c.name,
         s.limit ? plain(s.limit, cur) : "—",
@@ -2058,7 +2272,10 @@ function aiSnapshot(){
         s.avail == null ? "—" : (s.avail < 0 ? "OVER by " + plain(-s.avail, cur) : plain(s.avail, cur)),
         s.util == null ? "—" : Math.round(s.util * 100) + "%",
         c.apr ? c.apr + "%" : "—",
-        !c.confirmedAt ? "never" : s.age === 0 ? "today" : s.age + "d ago"
+        c.minPayment ? plain(c.minPayment, cur) : "—",
+        c.statementDay || "—",
+        !c.confirmedAt ? "never" : s.age === 0 ? "today" : s.age + "d ago",
+        bill || "not linked"
       ].join(" | ") + " |");
     }
     const lim = rows.reduce((n,[,s]) => n + s.limit, 0);
@@ -2068,6 +2285,39 @@ function aiSnapshot(){
            " · available " + plain(Math.max(0, lim - bal), cur) +
            (lim ? " · overall utilisation " + Math.round((bal / lim) * 100) + "%" : ""));
     L.push("");
+
+    const cash = cashFor(cur);
+    if(S.accounts.some(a => a.currency === cur)){
+      L.push("### Cash available (" + cur + ")");
+      L.push("");
+      for(const a of S.accounts.filter(x => x.currency === cur))
+        L.push("- " + (a.bank ? a.bank + " " : "") + a.name + ": " + plain(a.balance || 0, cur) +
+               (a.confirmedAt ? " (checked " + a.confirmedAt + ")" : ""));
+      L.push("");
+      L.push("Total cash: " + plain(cash, cur));
+      L.push("");
+    }
+
+    const plan = coachPlan(cur, S.payBudget && S.payBudget[cur] != null ? S.payBudget[cur] : cash);
+    if(plan && plan.steps.length){
+      L.push("### Suggested split of " + plain(plan.spent, cur) +
+             " (utilisation " + Math.round(plan.startUtil*100) + "% → " + Math.round(plan.endUtil*100) + "%)");
+      L.push("");
+      for(const st of plan.steps)
+        L.push("- " + st.name + ": " + plain(st.amount, cur) + "  (" + st.from + "% → " + st.to + "%)");
+      L.push("");
+    }
+    const po = payoffOrder(cur);
+    if(po.length){
+      L.push("### Carrying cost, dearest first (" + cur + ")");
+      L.push("");
+      for(const r of po)
+        L.push("- " + r.c.name + ": " + (r.apr ? r.apr + "% APR" : "APR unknown") +
+               " on " + plain(r.bal, cur) + " ≈ " + plain(r.monthly, cur) + "/mo");
+      L.push("");
+      L.push("Total interest ≈ " + plain(po.reduce((n,r)=>n+r.monthly,0)*12, cur) + "/yr");
+      L.push("");
+    }
   }
 
   // this month's bills, so questions about cash flow have the numbers
@@ -2100,13 +2350,6 @@ function aiSnapshot(){
     for(const l of S.loans)
       L.push("| " + [l.name, plain(l.balance, l.currency), l.apr ? l.apr + "%" : "—",
              l.minPayment ? plain(l.minPayment, l.currency) : "—"].join(" | ") + " |");
-    L.push("");
-  }
-  if(S.accounts.length){
-    L.push("## Cash");
-    L.push("");
-    for(const a of S.accounts)
-      L.push("- " + a.bank + " " + a.name + ": " + plain(a.balance, a.currency));
     L.push("");
   }
 
@@ -2237,7 +2480,7 @@ function renderCardSheet(){
 
     '<div class="sec">' +
       '<button class="ghost" id="cardArch">' + (c.archived ? "Restore this card" : "Archive (hide it)") + '</button>' +
-      '<button class="danger" id="cardDel">Delete card and its statements</button>' +
+      '<button class="danger" id="cardDel">Delete this card</button>' +
     '</div>';
 
   wireCardSheet(c);
@@ -2276,12 +2519,66 @@ function wireCardSheet(c){
 
   q("#cardArch").onclick = () => { c.archived = !c.archived; save(); closeSheet(); };
   q("#cardDel").onclick = () => {
-    if(!confirm('Delete "' + (c.name || "this card") + '" with its statements and logged spends?')) return;
+    if(!confirm('Delete "' + (c.name || "this card") + '" and everything logged against it?')) return;
     S.cards  = S.cards.filter(x => x.id !== c.id);
     S.spends = S.spends.filter(x => x.cardId !== c.id);
     S.statements = S.statements.filter(x => x.cardId !== c.id);
     save(); closeSheet(); toast("Deleted");
   };
+}
+
+/* ── account sheet ──────────────────────────────────────────────── */
+function openAccount(acctId){
+  UI.sheet = "account"; UI.cardId = null;
+  let a = acctId ? S.accounts.find(x => x.id === acctId) : null;
+  if(!a){
+    a = {id:uid(), bank:"", name:"", type:"Checking",
+         currency:(activeCards()[0] || {}).currency || "USD",
+         balance:0, confirmedAt:todayISO};
+    S.accounts.push(a); save(); UI.acctDraft = true;
+  }
+  UI.acctId = a.id;
+  $("#sheetTitle").textContent = a.name || "New account";
+  $("#sheetBody").innerHTML =
+    '<div class="sec"><span class="eyebrow">What is in it right now</span>' +
+      '<div class="fields">' +
+        '<div class="two">' +
+          '<div class="field"><label for="aBank">Bank</label>' +
+            '<input type="text" id="aBank" placeholder="e.g. Chase" value="' + esc(a.bank) + '"></div>' +
+          '<div class="field"><label for="aName">Account</label>' +
+            '<input type="text" id="aName" placeholder="e.g. Checking" value="' + esc(a.name) + '"></div>' +
+        '</div>' +
+        '<div class="two">' +
+          '<div class="field"><label for="aBal">Balance</label>' +
+            '<input type="number" inputmode="decimal" step="0.01" id="aBal" value="' + (a.balance || 0) + '"></div>' +
+          '<div class="field"><label for="aCur">Currency</label><select id="aCur">' +
+            '<option value="USD"' + (a.currency==="USD"?" selected":"") + '>US $</option>' +
+            '<option value="INR"' + (a.currency==="INR"?" selected":"") + '>India ₹</option>' +
+          '</select></div>' +
+        '</div>' +
+        '<div class="field"><label for="aDate">Checked on</label>' +
+          '<input type="date" id="aDate" value="' + esc(a.confirmedAt || todayISO) + '"></div>' +
+      '</div>' +
+      '<div class="hint" style="margin-top:9px">This is money available to pay cards with — not net worth. It drives the suggested split on the Cards tab.</div>' +
+      '<button class="danger" id="aDel" style="margin-top:12px">Remove this account</button>' +
+    '</div>';
+  const body = $("#sheetBody"), q = id => body.querySelector(id);
+  const patch = () => { save(); render(); };
+  q("#aBank").onchange = e => { a.bank = e.target.value.trim(); patch(); };
+  q("#aName").onchange = e => { a.name = e.target.value.trim(); UI.acctDraft = false;
+                                $("#sheetTitle").textContent = a.name || "New account"; patch(); };
+  q("#aBal").onchange  = e => { a.balance = parseFloat(e.target.value) || 0;
+                                a.confirmedAt = todayISO;
+                                q("#aDate").value = todayISO; patch(); };
+  q("#aCur").onchange  = e => { a.currency = e.target.value; patch(); };
+  q("#aDate").onchange = e => { a.confirmedAt = e.target.value || todayISO; patch(); };
+  q("#aDel").onclick   = () => {
+    if(!confirm("Remove " + (a.name || "this account") + "?")) return;
+    S.accounts = S.accounts.filter(x => x.id !== a.id);
+    UI.acctDraft = false; save(); closeSheet(); toast("Removed");
+  };
+  $("#scrim").classList.add("on");
+  $("#sheet").classList.add("on");
 }
 
 /** One screen, every card, one number each — the fastest honest refresh. */
@@ -2577,12 +2874,30 @@ $("#importFile").onchange = e => {
 // would fight the browser's own <details> toggle
 $("#main").addEventListener("toggle", e => {
   const d = e.target.closest && e.target.closest("[data-fold]");
-  if(d){ S[d.dataset.fold === "src" ? "srcOpen" : "settledOpen"] = d.open; saveLocal(); }
+  if(d){
+    const f = d.dataset.fold;
+    S[f === "src" ? "srcOpen" : f.startsWith("plan") ? "planOpen" : "settledOpen"] = d.open;
+    saveLocal();
+  }
 }, true);
+
+$("#main").addEventListener("change", e => {
+  const bg = e.target.closest("[data-budget]");
+  if(!bg) return;
+  const cur = bg.dataset.budget;
+  S.payBudget = S.payBudget || {};
+  const v = parseFloat(bg.value);
+  S.payBudget[cur] = Number.isFinite(v) && v >= 0 ? v : cashFor(cur);
+  save(); render();
+});
 
 $("#main").addEventListener("click", e => {
   const card = e.target.closest("[data-card]");
   if(card){ openCard(card.dataset.card); return; }
+  const md = e.target.closest("[data-mode2]");
+  if(md){ S.payMode = md.dataset.mode2; save(); render(); return; }
+  const acct = e.target.closest("[data-editacct]");
+  if(acct){ openAccount(acct.dataset.editacct); return; }
   const act = e.target.closest("[data-act]");
   if(act){
     const a = act.dataset.act;
@@ -2594,6 +2909,7 @@ $("#main").addEventListener("click", e => {
     }
     if(a === "refreshall") openRefreshAll();
     if(a === "copyai") doCopyForAI();
+    if(a === "addacct") openAccount(null);
     if(a === "fixstale") openRefreshAll();
     return;
   }
