@@ -743,6 +743,9 @@ if(!S.payments) S.payments = [];
 if(!S.viewMode) S.viewMode = "list";
 for(const k of ["cards","spends","statements","loans","accounts"])
   if(!Array.isArray(S[k])) S[k] = [];
+// a sheet hijacked mid-edit could strand a nameless draft card; sweep them
+if(S.cards.some(c => !String(c.name || "").trim()))
+  S.cards = S.cards.filter(c => String(c.name || "").trim());
 
 /* ── view state ─────────────────────────────────────────────────── */
 const now = new Date();
@@ -1745,7 +1748,9 @@ async function runSync(quiet){
   catch(e){ syncCfg().err = e.message; if(!quiet) toast(e.message, 3600); }
   syncing = false;
   saveLocal(); render();
-  if($("#sheet").classList.contains("on") && !UI.billId) openData();
+  // only refresh the data sheet if that is genuinely what is on screen —
+  // a background sync must never replace a sheet the user is working in
+  if(UI.sheet === "data" && $("#sheet").classList.contains("on")) openData();
 }
 /** On open: whichever side is newer wins. */
 async function syncBoot(){
@@ -1773,6 +1778,7 @@ async function syncBoot(){
 
 /* ── sheet ──────────────────────────────────────────────────────── */
 function openSheet(billId, period){
+  UI.sheet = "bill";
   UI.billId = billId;
   UI.sheetPeriod = period || periodKey(UI.y, UI.m);
   renderSheet();
@@ -1796,7 +1802,7 @@ function closeSheet(){
   }
   $("#scrim").classList.remove("on");
   $("#sheet").classList.remove("on");
-  UI.billId = null; UI.cardId = null; UI.dataView = null;
+  UI.billId = null; UI.cardId = null; UI.sheet = null;
   render();
 }
 
@@ -2035,7 +2041,8 @@ function newCard(){
   return c;
 }
 function openCard(cardId){
-  UI.cardId = cardId; UI.dataView = null;
+  UI.sheet = "card";
+  UI.cardId = cardId;
   renderCardSheet();
   $("#scrim").classList.add("on");
   $("#sheet").classList.add("on");
@@ -2162,7 +2169,8 @@ function wireCardSheet(c){
 
 /** One screen, every card, one number each — the fastest honest refresh. */
 function openRefreshAll(){
-  UI.cardId = null; UI.dataView = "refresh";
+  UI.sheet = "refresh";
+  UI.cardId = null;
   $("#sheetTitle").textContent = "Update balances";
   const cards = cardsByAvailable();
   $("#sheetBody").innerHTML =
@@ -2255,7 +2263,8 @@ function syncSectionHTML(){
 
 /* ── data sheet (backup / sources) ──────────────────────────────── */
 function openData(){
-  UI.billId = null;
+  UI.sheet = "data";
+  UI.billId = null; UI.cardId = null;
   $("#sheetTitle").textContent = "Data & sources";
   const counts = S.payments.length;
   $("#sheetBody").innerHTML =
@@ -2372,7 +2381,9 @@ function openData(){
 function markBackedUp(){
   S.lastBackup = {at:new Date().toISOString(), sig:signature()};
   save(); render();
-  if($("#sheet").classList.contains("on") && !UI.billId) openData();
+  // only refresh the data sheet if that is genuinely what is on screen —
+  // a background sync must never replace a sheet the user is working in
+  if(UI.sheet === "data" && $("#sheet").classList.contains("on")) openData();
 }
 async function doExport(){
   const name = "bill-ledger.json";     // stable name so Files can replace the old one
