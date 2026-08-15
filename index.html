@@ -427,6 +427,15 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
   text-transform:uppercase; color:var(--muted); background:var(--surface-2);
   border:1px solid var(--line); border-radius:4px; padding:1px 4px; margin-left:6px}
 .kindtag.warn{color:var(--warn); border-color:var(--warn); background:var(--warn-soft)}
+.movelist{margin-top:11px; border-top:1px solid var(--line-soft); padding-top:9px}
+.movelist .eyebrow{display:block; margin-bottom:6px}
+.moverow{display:flex; align-items:center; gap:9px; padding:7px 0; font-size:13px;
+  border-top:1px solid var(--line-soft)}
+.moverow:first-of-type{border-top:0}
+.moverow .d{flex:none; width:52px; color:var(--muted); font-size:12px}
+.mnote{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2)}
+.moverow .a{margin-left:auto; flex:none; font-weight:600; color:var(--bad)}
+.moverow .a.in{color:var(--ok)}
 .cardacts .ghost{margin-top:0}
 
 /* ── settled collapser ──────────────────────────────────────────── */
@@ -900,6 +909,28 @@ function maybeNudge(){
 const cardOf = id => S.cards.find(c => c.id === id);
 const daysBetween = (a, b) => Math.floor((b - a) / 86400000);
 
+/** Was this payment made after the balance was last confirmed?
+ *  Timestamps when we have them, so a payment and a confirmation on the same
+ *  day still order correctly; date comparison only as a fallback for records
+ *  written before confirmedTs existed. */
+function afterConfirm(holder, p){
+  if(!holder.confirmedAt) return true;
+  if(holder.confirmedTs && p.loggedAt){
+    const t = Date.parse(p.loggedAt);
+    if(Number.isFinite(t)) return t > holder.confirmedTs;
+  }
+  return (p.date || "") > holder.confirmedAt;
+}
+/** Movements logged by hand, kept until the next confirmation supersedes them. */
+const cardSpends = cardId => S.spends.filter(s => s.cardId === cardId);
+const acctMoves  = acctId => S.spends.filter(s => s.accountId === acctId);
+/** Stamp a confirmation so later movements can be ordered against it. */
+function markConfirmed(holder, balance){
+  holder.balance = balance;
+  holder.confirmedAt = todayISO;
+  holder.confirmedTs = Date.now();
+}
+
 /** Interest since the balance was confirmed. Simple apr/12 pro-rated by
  *  days — it ignores grace periods and cash-advance rates, so it is only
  *  ever shown as an estimate. */
@@ -914,12 +945,12 @@ function cardState(c){
   const conf = c.confirmedAt ? new Date(c.confirmedAt + "T00:00:00") : null;
   const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
 
-  // movements recorded since the confirmation, which the statement can't know
-  const since = d => c.confirmedAt ? d > c.confirmedAt : true;
-  const spent = S.spends.filter(s => s.cardId === c.id && since(s.date))
-                        .reduce((n,s) => n + (s.amount || 0), 0);
+  // Spends are wiped when a balance is confirmed, so anything still here was
+  // logged afterwards. No date filter: comparing dates dropped a spend made on
+  // the same day it was confirmed, which silently did nothing.
+  const spent = cardSpends(c.id).reduce((n,s) => n + (s.amount || 0), 0);
   const repaid = c.billId
-    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" && since(p.date))
+    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" && afterConfirm(c, p))
                 .reduce((n,p) => n + (p.amount || 0), 0)
     : 0;
 
@@ -997,7 +1028,7 @@ const sPeriod = v => /^\d{4}-\d{2}$/.test(String(v)) ? String(v)
 function sanitize(d){
   if(!d || typeof d !== "object") throw new Error("shape");
   let sources = (Array.isArray(d.sources) ? d.sources : []).slice(0, 60)
-    .map(s => ({id:sId(s && s.id), name:sStr(s && s.name, 40) || "Account", color:sHex(s && s.color)}))
+    .map(s => ({id:sId(s && s.id), name:sStr(s && s.name, 40) || "Account", color:sHex(s && s.color), accountId:sId(s && s.accountId)}))
     .filter(s => s.id);
   if(!sources.length) sources = [{id:"account", name:"Account", color:"#5C6670"}];
   const srcIds = new Set(sources.map(s => s.id));
@@ -1047,6 +1078,7 @@ function sanitize(d){
     statementDay: sInt(c.statementDay, 0, 31, 0),
     balance:  Math.max(0, sNum(c.balance, 0)),
     confirmedAt:   c.confirmedAt ? sDate(c.confirmedAt) : "",
+    confirmedTs:   sNum(c.confirmedTs, 0) || 0,
     confirmedFrom: c.confirmedFrom === "statement" ? "statement" : "manual",
     minPayment: Math.max(0, sNum(c.minPayment, 0)),
     dueDate:  c.dueDate ? sDate(c.dueDate) : "",
@@ -1054,9 +1086,15 @@ function sanitize(d){
   }).filter(c => c && c.id);
   const cardIds = new Set(cards.map(c => c.id));
 
+  const acctIdsEarly = new Set((Array.isArray(d.accounts) ? d.accounts : [])
+    .map(a => sId(a && a.id)).filter(Boolean));
   const spends = (Array.isArray(d.spends) ? d.spends : []).slice(0, 20000)
-    .filter(x => x && cardIds.has(sId(x.cardId)))
-    .map(x => ({id:sId(x.id) || uid(), cardId:sId(x.cardId), date:sDate(x.date),
+    .filter(x => x && (cardIds.has(sId(x.cardId)) || acctIdsEarly.has(sId(x.accountId))))
+    .map(x => ({id:sId(x.id) || uid(),
+                cardId: cardIds.has(sId(x.cardId)) ? sId(x.cardId) : "",
+                accountId: acctIdsEarly.has(sId(x.accountId)) ? sId(x.accountId) : "",
+                dir: x.dir === "in" ? "in" : "out",
+                date:sDate(x.date), loggedAt:sStr(x.loggedAt, 40),
                 amount:Math.max(0, sNum(x.amount, 0)), note:sStr(x.note, 120)}));
 
   const statements = (Array.isArray(d.statements) ? d.statements : []).slice(0, 5000)
@@ -1081,6 +1119,7 @@ function sanitize(d){
     apr:Math.min(100, Math.max(0, sNum(l.apr, 0))),
     minPayment:Math.max(0, sNum(l.minPayment, 0)),
     confirmedAt:l.confirmedAt ? sDate(l.confirmedAt) : "",
+    confirmedTs:sNum(l.confirmedTs, 0) || 0,
     billId: billIdSet.has(sId(l.billId)) ? sId(l.billId) : "",
     archived: !!l.archived
   }).filter(l => l && l.id);
@@ -1089,7 +1128,8 @@ function sanitize(d){
     id:sId(a.id), bank:sStr(a.bank, 40), name:sStr(a.name, 40),
     type:sStr(a.type, 24), currency:a.currency === "INR" ? "INR" : "USD",
     balance:sNum(a.balance, 0),
-    confirmedAt:a.confirmedAt ? sDate(a.confirmedAt) : ""
+    confirmedAt:a.confirmedAt ? sDate(a.confirmedAt) : "",
+    confirmedTs:sNum(a.confirmedTs, 0) || 0
   }).filter(a => a && a.id);
 
   return {
@@ -1536,8 +1576,9 @@ function planHTML(){
       '<b class="num">' + money(cash, cur) + '</b></div>';
     out += accts.length
       ? '<div class="mini">' + accts.map(a =>
-          '<div class="mini-row"><span>' + esc(a.bank ? a.bank + ' · ' : '') + esc(a.name) + '</span>' +
-          '<span class="a num">' + money(a.balance || 0, cur) + '</span>' +
+          '<div class="mini-row"><span>' + esc(a.bank ? a.bank + ' · ' : '') + esc(a.name) +
+            (accountState(a).moved ? '<i class="kindtag">live</i>' : '') + '</span>' +
+          '<span class="a num">' + money(accountState(a).estimate, cur) + '</span>' +
           '<button class="paydel" data-editacct="' + esc(a.id) + '" aria-label="Edit ' + esc(a.name) + '">' +
           '<svg viewBox="0 0 24 24"><path d="M4 20h16M13.5 5.5l3 3L8 17H5v-3z"/></svg></button></div>').join("") +
         '</div>' + (age != null && age > 7
@@ -2194,9 +2235,8 @@ function loanState(l){
   const t = new Date(); t.setHours(0,0,0,0);
   const conf = l.confirmedAt ? new Date(l.confirmedAt + "T00:00:00") : null;
   const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
-  const since = d => l.confirmedAt ? d > l.confirmedAt : true;
   const repaid = l.billId
-    ? S.payments.filter(p => p.billId === l.billId && p.status === "paid" && since(p.date))
+    ? S.payments.filter(p => p.billId === l.billId && p.status === "paid" && afterConfirm(l, p))
                 .reduce((n,p) => n + (p.amount || 0), 0)
     : 0;
   const interest = (l.apr && age) ? (l.balance || 0) * (l.apr / 100 / 365) * age : 0;
@@ -2212,10 +2252,39 @@ function loanState(l){
 }
 
 /* ── cash on hand ───────────────────────────────────────────────────
-   Not net worth — just what is actually available to pay cards with.  */
+   Not net worth — just what is actually available to pay cards with.
+   Same confirmed-plus-movements model as a card: the balance you last
+   read from the bank, then everything recorded since.                 */
+const acctOf = id => S.accounts.find(a => a.id === id);
+
+function accountState(a){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const conf = a.confirmedAt ? new Date(a.confirmedAt + "T00:00:00") : null;
+  const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
+
+  const moves = acctMoves(a.id);
+  const out = moves.filter(m => m.dir !== "in").reduce((n,m) => n + (m.amount || 0), 0);
+  const inn = moves.filter(m => m.dir === "in").reduce((n,m) => n + (m.amount || 0), 0);
+
+  // bills paid from a source that draws on this account
+  const srcIds = S.sources.filter(s => s.accountId === a.id).map(s => s.id);
+  const paidOut = srcIds.length
+    ? S.payments.filter(p => p.status === "paid" && srcIds.includes(p.sourceId) && afterConfirm(a, p))
+                .reduce((n,p) => n + (p.amount || 0), 0)
+    : 0;
+
+  const estimate = (a.balance || 0) - out + inn - paidOut;
+  return {
+    confirmed:a.balance || 0, estimate, out, inn, paidOut, age,
+    linkedSources: srcIds.length,
+    moved: out > 0 || inn > 0 || paidOut > 0,
+    shaky: !a.confirmedAt || (age != null && age > 7)
+  };
+}
+/** What is actually spendable now, after everything recorded since the read. */
 function cashFor(cur){
   return S.accounts.filter(a => a.currency === cur)
-                   .reduce((n,a) => n + (a.balance || 0), 0);
+                   .reduce((n,a) => n + accountState(a).estimate, 0);
 }
 function cashAge(cur){
   const list = S.accounts.filter(a => a.currency === cur && a.confirmedAt);
@@ -2539,6 +2608,7 @@ function renderCardSheet(){
           : '') +
       '</div>' +
       (s.moved ? '<div class="hint" style="margin-top:8px">The estimate adds interest and anything logged since the confirmation. Only the confirmed figure comes from your card.</div>' : '') +
+      movesHTML(cardSpends(c.id), c.currency, "Spends since that reading") +
       '<button class="primary" id="cardConfirm" style="margin-top:11px">Update balance from my card app</button>' +
       '<button class="ghost" id="cardSpend">Log a spend</button>' +
     '</div>' +
@@ -2583,7 +2653,7 @@ function wireCardSheet(c){
     if(v === null) return;
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
     if(!Number.isFinite(n) || n < 0) return toast("Enter a number");
-    c.balance = n; c.confirmedAt = todayISO; c.confirmedFrom = "manual";
+    markConfirmed(c, n); c.confirmedFrom = "manual";
     S.spends = S.spends.filter(x => x.cardId !== c.id);   // superseded by a fresh truth
     patch(); reflow(); toast("Balance confirmed");
   };
@@ -2592,7 +2662,9 @@ function wireCardSheet(c){
     if(v === null) return;
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
     if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
-    S.spends.push({id:uid(), cardId:c.id, date:todayISO, amount:n, note:""});
+    const note = prompt("What for? (optional)", "") || "";
+    S.spends.push({id:uid(), cardId:c.id, accountId:"", dir:"out", date:todayISO,
+                   loggedAt:new Date().toISOString(), amount:n, note:note.trim()});
     patch(); reflow(); toast("Logged " + money(n, c.currency));
   };
 
@@ -2611,6 +2683,22 @@ function wireCardSheet(c){
     S.statements = S.statements.filter(x => x.cardId !== c.id);
     save(); closeSheet(); toast("Deleted");
   };
+}
+
+/** Timeline of hand-logged movements, newest first, each removable. */
+function movesHTML(list, cur, title){
+  if(!list.length) return "";
+  const sorted = list.slice().sort((a,b) =>
+    (b.loggedAt || b.date || "").localeCompare(a.loggedAt || a.date || ""));
+  return '<div class="movelist"><span class="eyebrow">' + title + '</span>' +
+    sorted.map(m =>
+      '<div class="moverow"><span class="d num">' + shortDate(m.date) + '</span>' +
+      '<span class="mnote">' + (m.note ? esc(m.note) : (m.dir === "in" ? "money in" : "spend")) + '</span>' +
+      '<span class="a num' + (m.dir === "in" ? " in" : "") + '">' +
+        (m.dir === "in" ? "+" : "−") + money(m.amount || 0, cur) + '</span>' +
+      '<button class="paydel" data-delmove="' + esc(m.id) + '" aria-label="Remove entry">' +
+      '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>').join("") +
+  '</div>';
 }
 
 /* ── loan sheet ─────────────────────────────────────────────────── */
@@ -2685,7 +2773,7 @@ function openLoan(loanId){
     if(v === null) return;
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
     if(!Number.isFinite(n) || n < 0) return toast("Enter a number");
-    l.balance = n; l.confirmedAt = todayISO; save(); reflow(); toast("Balance confirmed");
+    markConfirmed(l, n); save(); reflow(); toast("Balance confirmed");
   };
   q("#lName").onchange   = e => { l.name = e.target.value.trim(); UI.loanDraft = false;
                                   $("#sheetTitle").textContent = l.name || "New loan"; patch(); };
@@ -2715,43 +2803,97 @@ function openAccount(acctId){
     S.accounts.push(a); save(); UI.acctDraft = true;
   }
   UI.acctId = a.id;
+  const st = accountState(a);
   $("#sheetTitle").textContent = a.name || "New account";
+  const srcOptions = '<option value="">Not linked</option>' +
+    S.sources.map(x => '<option value="' + esc(x.id) + '"' +
+      (x.accountId === a.id ? " selected" : "") + '>' + esc(x.name) + '</option>').join("");
+
   $("#sheetBody").innerHTML =
-    '<div class="sec"><span class="eyebrow">What is in it right now</span>' +
-      '<div class="fields">' +
-        '<div class="two">' +
-          '<div class="field"><label for="aBank">Bank</label>' +
-            '<input type="text" id="aBank" placeholder="e.g. Chase" value="' + esc(a.bank) + '"></div>' +
-          '<div class="field"><label for="aName">Account</label>' +
-            '<input type="text" id="aName" placeholder="e.g. Checking" value="' + esc(a.name) + '"></div>' +
-        '</div>' +
-        '<div class="two">' +
-          '<div class="field"><label for="aBal">Balance</label>' +
-            '<input type="number" inputmode="decimal" step="0.01" id="aBal" value="' + (a.balance || 0) + '"></div>' +
-          '<div class="field"><label for="aCur">Currency</label><select id="aCur">' +
-            '<option value="USD"' + (a.currency==="USD"?" selected":"") + '>US $</option>' +
-            '<option value="INR"' + (a.currency==="INR"?" selected":"") + '>India ₹</option>' +
-          '</select></div>' +
-        '</div>' +
-        '<div class="field"><label for="aDate">Checked on</label>' +
-          '<input type="date" id="aDate" value="' + esc(a.confirmedAt || todayISO) + '"></div>' +
+    '<div class="sec"><span class="eyebrow">Available now</span>' +
+      '<div class="paystate ' + (st.estimate < 0 ? "part" : "done") + '">' +
+        '<div class="paystate-top"><span>Balance</span>' +
+          '<b class="num">' + money(st.estimate, a.currency) + '</b></div>' +
+        '<div class="paystate-sub">' +
+          (st.moved
+            ? money(st.confirmed, a.currency) + ' read' +
+              (a.confirmedAt ? ' ' + shortDate(a.confirmedAt) : '') +
+              (st.paidOut ? ' · ' + money(st.paidOut, a.currency) + ' of bills paid' : '') +
+              (st.out ? ' · ' + money(st.out, a.currency) + ' spent' : '') +
+              (st.inn ? ' · ' + money(st.inn, a.currency) + ' in' : '')
+            : 'Last read' + (a.confirmedAt ? ' ' + shortDate(a.confirmedAt) : ' never')) +
+        '</div></div>' +
+      movesHTML(acctMoves(a.id), a.currency, "Since that reading") +
+      '<button class="primary" id="aConfirm" style="margin-top:11px">Update from my bank app</button>' +
+      '<button class="ghost" id="aSpend">Log a spend</button>' +
+      '<button class="ghost" id="aIn">Log money in</button>' +
+    '</div>' +
+
+    '<div class="sec"><span class="eyebrow">Account settings</span><div class="fields">' +
+      '<div class="two">' +
+        '<div class="field"><label for="aBank">Bank</label>' +
+          '<input type="text" id="aBank" placeholder="e.g. Chase" value="' + esc(a.bank) + '"></div>' +
+        '<div class="field"><label for="aName">Account</label>' +
+          '<input type="text" id="aName" placeholder="e.g. Checking" value="' + esc(a.name) + '"></div>' +
       '</div>' +
-      '<div class="hint" style="margin-top:9px">This is money available to pay cards with — not net worth. It drives the suggested split on the Cards tab.</div>' +
-      '<button class="danger" id="aDel" style="margin-top:12px">Remove this account</button>' +
-    '</div>';
+      '<div class="two">' +
+        '<div class="field"><label for="aBal">Balance as last read</label>' +
+          '<input type="number" inputmode="decimal" step="0.01" id="aBal" value="' + (a.balance || 0) + '"></div>' +
+        '<div class="field"><label for="aCur">Currency</label><select id="aCur">' +
+          '<option value="USD"' + (a.currency==="USD"?" selected":"") + '>US $</option>' +
+          '<option value="INR"' + (a.currency==="INR"?" selected":"") + '>India ₹</option>' +
+        '</select></div>' +
+      '</div>' +
+      '<div class="field"><label for="aSrc">Bills paid from this account</label>' +
+        '<select id="aSrc">' + srcOptions + '</select></div>' +
+      '<div class="hint">Pick the payment source your bills are tagged with. Every bill you tick off against it then comes out of this balance.</div>' +
+    '</div></div>' +
+
+    '<div class="sec">' +
+      '<button class="danger" id="aDel">Remove this account</button></div>';
+
   const body = $("#sheetBody"), q = id => body.querySelector(id);
   const patch = () => { save(); render(); };
+  const reflow = () => { openAccount(a.id); render(); };
+  const ask = (label, dir) => {
+    const v = prompt(label, "");
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
+    const note = prompt("What for? (optional)", "") || "";
+    S.spends.push({id:uid(), accountId:a.id, cardId:"", dir, date:todayISO,
+                   loggedAt:new Date().toISOString(), amount:n, note:note.trim()});
+    save(); reflow(); toast((dir === "in" ? "+" : "−") + money(n, a.currency));
+  };
+  q("#aConfirm").onclick = () => {
+    const v = prompt("Balance your bank app shows for " + (a.name || "this account") + ":",
+                     String(a.balance || 0));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n)) return toast("Enter a number");
+    markConfirmed(a, n);
+    S.spends = S.spends.filter(x => x.accountId !== a.id);   // superseded
+    save(); reflow(); toast("Balance confirmed");
+  };
+  q("#aSpend").onclick = () => ask("Amount spent from " + (a.name || "this account") + ":", "out");
+  q("#aIn").onclick    = () => ask("Amount paid into " + (a.name || "this account") + ":", "in");
+
   q("#aBank").onchange = e => { a.bank = e.target.value.trim(); patch(); };
   q("#aName").onchange = e => { a.name = e.target.value.trim(); UI.acctDraft = false;
                                 $("#sheetTitle").textContent = a.name || "New account"; patch(); };
-  q("#aBal").onchange  = e => { a.balance = parseFloat(e.target.value) || 0;
-                                a.confirmedAt = todayISO;
-                                q("#aDate").value = todayISO; patch(); };
-  q("#aCur").onchange  = e => { a.currency = e.target.value; patch(); };
-  q("#aDate").onchange = e => { a.confirmedAt = e.target.value || todayISO; patch(); };
+  q("#aBal").onchange  = e => { markConfirmed(a, parseFloat(e.target.value) || 0); reflow(); patch(); };
+  q("#aCur").onchange  = e => { a.currency = e.target.value; reflow(); patch(); };
+  q("#aSrc").onchange  = e => {
+    S.sources.forEach(x => { if(x.accountId === a.id) x.accountId = ""; });
+    const src = S.sources.find(x => x.id === e.target.value);
+    if(src) src.accountId = a.id;
+    reflow(); patch();
+  };
   q("#aDel").onclick   = () => {
     if(!confirm("Remove " + (a.name || "this account") + "?")) return;
     S.accounts = S.accounts.filter(x => x.id !== a.id);
+    S.spends   = S.spends.filter(x => x.accountId !== a.id);
+    S.sources.forEach(x => { if(x.accountId === a.id) x.accountId = ""; });
     UI.acctDraft = false; save(); closeSheet(); toast("Removed");
   };
   $("#scrim").classList.add("on");
@@ -2784,7 +2926,7 @@ function openRefreshAll(){
       const v = parseFloat(inp.value);
       if(!Number.isFinite(v) || v < 0) return;
       if(Math.abs(v - (c.balance || 0)) > 0.005 || c.confirmedAt !== todayISO) n++;
-      c.balance = v; c.confirmedAt = todayISO; c.confirmedFrom = "manual";
+      markConfirmed(c, v); c.confirmedFrom = "manual";
       S.spends = S.spends.filter(x => x.cardId !== c.id);
     });
     save(); closeSheet(); toast(n ? n + " card" + (n===1?"":"s") + " updated" : "Nothing changed");
@@ -3132,6 +3274,15 @@ $("#addBtn").onclick = () => {
   setTimeout(() => { const el = $("#bName"); if(el) el.focus(); }, 280);
 };
 $("#dataBtn").onclick = openData;
+$("#sheetBody").addEventListener("click", e => {
+  const del = e.target.closest("[data-delmove]");
+  if(!del) return;
+  S.spends = S.spends.filter(x => x.id !== del.dataset.delmove);
+  save();
+  if(UI.sheet === "card") renderCardSheet();
+  else if(UI.sheet === "account") openAccount(UI.acctId);
+  render();
+});
 $("#sheetDone").onclick = closeSheet;
 $("#scrim").onclick = closeSheet;
 document.addEventListener("keydown", e => { if(e.key === "Escape" && $("#sheet").classList.contains("on")) closeSheet(); });
