@@ -436,6 +436,18 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .mnote{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2)}
 .moverow .a{margin-left:auto; flex:none; font-weight:600; color:var(--bad)}
 .moverow .a.in{color:var(--ok)}
+.dates{display:grid; grid-template-columns:1fr 1fr; gap:9px}
+.datebox{border:1px solid var(--line); border-radius:11px; padding:10px 11px; background:var(--surface-2)}
+.datebox span{display:block; font-size:10.5px; font-weight:650; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--muted)}
+.datebox b{display:block; font-family:var(--f-display); font-size:19px; font-weight:600;
+  letter-spacing:-.01em; margin-top:3px}
+.datebox i{display:block; font-style:normal; font-size:11.5px; color:var(--muted); margin-top:1px}
+.duetag{font-style:normal; font-size:10px; font-weight:650; letter-spacing:.04em;
+  padding:1px 5px; border-radius:4px; margin-left:6px; background:var(--surface-2);
+  border:1px solid var(--line); color:var(--muted)}
+.duetag.soon{background:var(--warn-soft); border-color:var(--warn); color:var(--warn)}
+.duetag.ok{background:var(--ok-soft); border-color:var(--ok); color:var(--ok)}
 .cardacts .ghost{margin-top:0}
 
 /* ── settled collapser ──────────────────────────────────────────── */
@@ -987,6 +999,40 @@ function cardState(c){
     moved: spent > 0 || repaid > 0 || interest >= 1
   };
 }
+/** The bill a card is paid through, when there is one. */
+const cardBill = c => c.billId ? S.bills.find(b => b.id === c.billId && !b.archived) : null;
+
+/** Next occurrence of a day-of-month, clamped for short months. */
+function nextOnDay(day){
+  if(!day) return null;
+  const t = new Date(); t.setHours(0,0,0,0);
+  const mk = (y,m) => new Date(y, m, Math.min(day, daysIn(y, m)));
+  let d = mk(t.getFullYear(), t.getMonth());
+  if(d < t) d = mk(t.getMonth() === 11 ? t.getFullYear()+1 : t.getFullYear(), (t.getMonth()+1) % 12);
+  return d;
+}
+/** Dates a card runs on: when the statement cuts, when payment is due. */
+function cardDates(c){
+  const t = new Date(); t.setHours(0,0,0,0);
+  const bill = cardBill(c);
+  const dueDay = c.dueDay || (bill ? bill.dueDay : 0);
+  const stmt = nextOnDay(c.statementDay);
+  const due  = nextOnDay(dueDay);
+  return {
+    dueDay, bill,
+    statement: stmt, due,
+    statementIn: stmt ? daysBetween(t, stmt) : null,
+    dueIn: due ? daysBetween(t, due) : null
+  };
+}
+/** Where the card's payment for the month being viewed stands. */
+function cardMonth(c){
+  const bill = cardBill(c);
+  if(!bill) return null;
+  const pk = periodKey(UI.y, UI.m);
+  return {bill, pk, state: stateOf(bill, UI.y, UI.m), progress: progressOf(bill, pk)};
+}
+
 function activeCards(){ return S.cards.filter(c => !c.archived); }
 /** Which card can I actually use — most available credit first.
  *  Only ever compares within a currency: ₹194,352 is not more room than
@@ -1076,6 +1122,7 @@ function sanitize(d){
     limit:    Math.max(0, sNum(c.limit, 0)),
     apr:      Math.min(100, Math.max(0, sNum(c.apr, 0))),
     statementDay: sInt(c.statementDay, 0, 31, 0),
+    dueDay:       sInt(c.dueDay, 0, 31, 0),
     balance:  Math.max(0, sNum(c.balance, 0)),
     confirmedAt:   c.confirmedAt ? sDate(c.confirmedAt) : "",
     confirmedTs:   sNum(c.confirmedTs, 0) || 0,
@@ -1508,6 +1555,13 @@ function cardsHTML(){
       else if(s.age === 0) note = 'Confirmed today';
       else if(s.age === 1) note = 'Confirmed yesterday';
       else                 note = 'Confirmed ' + s.age + ' days ago';
+      const dts = cardDates(c);
+      const cmm = cardMonth(c);
+      const paidThis = cmm && (cmm.state === "paid" || cmm.state === "skipped");
+      const duetag = paidThis ? '<i class="duetag ok">paid</i>'
+        : dts.dueIn == null ? ''
+        : '<i class="duetag' + (dts.dueIn <= 3 ? ' soon' : '') + '">due ' +
+          MON3[dts.due.getMonth()] + ' ' + dts.due.getDate() + '</i>';
       return '<button class="cardrow" data-card="' + esc(c.id) + '" data-level="' + s.level +
           '"' + (s.shaky ? ' data-shaky="1"' : '') + (over ? ' data-over="1"' : '') + '>' +
         '<span class="cardrow-top">' +
@@ -1520,7 +1574,7 @@ function cardsHTML(){
           (s.util == null ? 0 : Math.min(100, s.util * 100).toFixed(1)) + '%"></i></span>' +
         '<span class="cardrow-bot">' +
           '<span class="chip-level">' + (s.util == null ? LEVEL_LABEL.none
-              : Math.round(s.util * 100) + '% used &middot; ' + LEVEL_LABEL[s.level]) + '</span>' +
+              : Math.round(s.util * 100) + '% used') + duetag + '</span>' +
           '<span class="cardnote">' + note + '</span>' +
         '</span></button>';
     }).join("") + '</div>').join("");
@@ -2565,13 +2619,19 @@ function openCard(cardId){
 function renderCardSheet(){
   const c = cardOf(UI.cardId);
   if(!c) return closeSheet();
-  const s = cardState(c);
+  const s  = cardState(c);
+  const dt = cardDates(c);
+  const cm = cardMonth(c);
   $("#sheetTitle").textContent = c.name || "New card";
 
   const billOptions = '<option value="">Not linked</option>' +
     S.bills.filter(b => !b.archived).map(b =>
       '<option value="' + esc(b.id) + '"' + (b.id === c.billId ? " selected" : "") + '>' +
       esc(b.name) + '</option>').join("");
+  const dueDayOptions = '<option value="0">Not set</option>' +
+    Array.from({length:31}, (_,i) =>
+      '<option value="' + (i+1) + '"' + (i+1 === dt.dueDay ? " selected" : "") + '>' +
+      (i+1) + '</option>').join("");
   const dayOptions = '<option value="0">Not set</option>' +
     Array.from({length:31}, (_,i) =>
       '<option value="' + (i+1) + '"' + (i+1 === c.statementDay ? " selected" : "") + '>' +
@@ -2608,9 +2668,36 @@ function renderCardSheet(){
           : '') +
       '</div>' +
       (s.moved ? '<div class="hint" style="margin-top:8px">The estimate adds interest and anything logged since the confirmation. Only the confirmed figure comes from your card.</div>' : '') +
-      movesHTML(cardSpends(c.id), c.currency, "Spends since that reading") +
-      '<button class="primary" id="cardConfirm" style="margin-top:11px">Update balance from my card app</button>' +
-      '<button class="ghost" id="cardSpend">Log a spend</button>' +
+      movesHTML(cardSpends(c.id), c.currency, "Since that reading") +
+      '<button class="ghost" id="cardSpend" style="margin-top:11px">Log a spend</button>' +
+      '<button class="ghost" id="cardPay">Log a payment</button>' +
+      '<button class="ghost" id="cardConfirm">Update balance from my card app</button>' +
+    '</div>' +
+
+    /* ── the two dates a card runs on ── */
+    '<div class="sec"><span class="eyebrow">Dates</span>' +
+      '<div class="dates">' +
+        '<div class="datebox"><span>Payment due</span>' +
+          '<b>' + (dt.due ? MON3[dt.due.getMonth()] + ' ' + dt.due.getDate() : '—') + '</b>' +
+          '<i>' + (dt.dueIn == null ? 'no due day set'
+                  : dt.dueIn === 0 ? 'today' : 'in ' + dt.dueIn + ' day' + (dt.dueIn===1?'':'s')) + '</i></div>' +
+        '<div class="datebox"><span>Statement cuts</span>' +
+          '<b>' + (dt.statement ? MON3[dt.statement.getMonth()] + ' ' + dt.statement.getDate() : '—') + '</b>' +
+          '<i>' + (dt.statementIn == null ? 'no statement day'
+                  : dt.statementIn === 0 ? 'today' : 'in ' + dt.statementIn + ' day' + (dt.statementIn===1?'':'s')) + '</i></div>' +
+      '</div>' +
+      (cm
+        ? '<div class="mini" style="margin-top:11px">' +
+            '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
+            '<span class="a num" style="color:' +
+              (cm.state === "paid" ? 'var(--ok)' : cm.state === "partial" ? 'var(--accent)' : 'var(--muted)') + '">' +
+              (cm.state === "paid" ? 'paid ' + money(cm.progress.paid, c.currency)
+               : cm.state === "partial" ? money(cm.progress.paid, c.currency) + ' of ' + money(cm.progress.target, c.currency)
+               : cm.state === "skipped" ? 'nothing owed'
+               : 'not yet') + '</span></div>' +
+          '</div>' +
+          '<div class="hint" style="margin-top:7px">Tracked in the monthly list as “' + esc(cm.bill.name) + '”.</div>'
+        : '<div class="hint" style="margin-top:11px">Not in the monthly list yet. Logging a payment adds it, so it shows up with your other bills.</div>') +
     '</div>' +
 
     '<div class="sec"><span class="eyebrow">Card settings</span><div class="fields">' +
@@ -2628,7 +2715,13 @@ function renderCardSheet(){
           '<input type="number" inputmode="decimal" step="0.01" id="cApr" placeholder="24.99" value="' + (c.apr || "") + '"></div>' +
         '<div class="field"><label for="cStmt">Statement day</label>' +
           '<select id="cStmt">' + dayOptions + '</select></div></div>' +
-      '<div class="hint">Setting a statement day turns on the monthly reminder to file that card’s statement.</div>' +
+      '<div class="two">' +
+        '<div class="field"><label for="cDue">Payment due day</label>' +
+          '<select id="cDue">' + dueDayOptions + '</select></div>' +
+        '<div class="field"><label for="cMin">Minimum payment</label>' +
+          '<input type="number" inputmode="decimal" step="0.01" id="cMin" value="' + (c.minPayment || 0) + '"></div>' +
+      '</div>' +
+      '<div class="hint">The statement day is when the balance is worth re-reading; the due day is when payment lands.</div>' +
       '<div class="field"><label for="cBill">Paid by which bill</label>' +
         '<select id="cBill">' + billOptions + '</select></div>' +
       '<div class="hint">Link it and payments you record in the ledger come off this balance automatically.</div>' +
@@ -2646,6 +2739,34 @@ function wireCardSheet(c){
   const q = id => body.querySelector(id);
   const patch = () => { save(); render(); };
   const reflow = () => { renderCardSheet(); render(); };
+
+  // Log a payment from the card, so a card can be run from one place. If it
+  // is not in the monthly list yet, adding it there is part of the same tap.
+  q("#cardPay").onclick = () => {
+    const dts = cardDates(c);
+    let bill = dts.bill;
+    if(!bill){
+      if(!c.name.trim()) return toast("Give the card a name first");
+      bill = {
+        id:uid(), name:c.name, amount:c.minPayment || 0, currency:c.currency,
+        sourceId:(S.sources[0] || {}).id || "", dueDay:dts.dueDay || c.statementDay || 1,
+        freq:"monthly", anchorY:UI.y, anchorM:UI.m, endYear:null,
+        note:"", archived:false
+      };
+      S.bills.push(bill); c.billId = bill.id;
+      toast("Added to the monthly list");
+    }
+    const pk = periodKey(UI.y, UI.m);
+    const g = progressOf(bill, pk);
+    const suggest = g.left > 0 ? g.left : (c.minPayment || bill.amount || 0);
+    const v = prompt("Payment on " + (c.name || "this card") + ":", String(Math.round(suggest * 100) / 100));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
+    // final only when it clears the expected amount, so part-payments stay open
+    addPayment(bill.id, pk, {amount:n, final: !(bill.amount > 0 && n < bill.amount - 0.005)});
+    save(); reflow(); toast("Paid " + money(n, c.currency));
+  };
 
   q("#cardConfirm").onclick = () => {
     const v = prompt("Balance shown in your " + (c.name || "card") + " app right now:",
@@ -2673,6 +2794,13 @@ function wireCardSheet(c){
   q("#cCur").onchange   = e => { c.currency = e.target.value; reflow(); patch(); };
   q("#cApr").onchange   = e => { c.apr = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
   q("#cStmt").onchange  = e => { c.statementDay = parseInt(e.target.value,10) || 0; reflow(); patch(); };
+  q("#cDue").onchange   = e => {
+    c.dueDay = parseInt(e.target.value,10) || 0;
+    const b = cardBill(c);                    // keep the bill on the same date
+    if(b && c.dueDay) b.dueDay = c.dueDay;
+    reflow(); patch();
+  };
+  q("#cMin").onchange   = e => { c.minPayment = Math.max(0, parseFloat(e.target.value) || 0); patch(); };
   q("#cBill").onchange  = e => { c.billId = e.target.value; reflow(); patch(); };
 
   q("#cardArch").onclick = () => { c.archived = !c.archived; save(); closeSheet(); };
