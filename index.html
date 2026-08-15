@@ -400,6 +400,9 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .cardrow[data-level="watch"] .cardbar i{background:var(--accent)}
 .cardrow[data-level="tight"] .cardbar i{background:var(--warn)}
 .cardrow[data-level="maxed"] .cardbar i{background:var(--bad)}
+.roomlabel{display:block; font-size:10px; font-weight:650; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--muted); text-align:right; margin-top:-1px}
+.cardrow[data-over="1"] .roomlabel{color:var(--bad)}
 .cardrow-bot{display:flex; align-items:center; gap:10px; font-size:11.5px; color:var(--muted)}
 .chip-level{font-weight:600}
 .cardnote{margin-left:auto; text-align:right; white-space:nowrap;
@@ -436,6 +439,13 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .mnote{min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--ink-2)}
 .moverow .a{margin-left:auto; flex:none; font-weight:600; color:var(--bad)}
 .moverow .a.in{color:var(--ok)}
+.rowtoggle{display:flex; align-items:center; gap:12px; margin-top:11px; padding:11px 12px;
+  border:1px solid var(--line); border-radius:11px; background:var(--surface-2);
+  font-size:13.5px; min-height:44px; cursor:pointer}
+.rowtoggle span{flex:1}
+.rowtoggle input{width:20px; height:20px; accent-color:var(--accent); flex:none}
+.linkbtn{color:var(--accent); font-weight:600; font-size:inherit; padding:2px 0;
+  text-decoration:underline; text-underline-offset:2px}
 .dates{display:grid; grid-template-columns:1fr 1fr; gap:9px}
 .datebox{border:1px solid var(--line); border-radius:11px; padding:10px 11px; background:var(--surface-2)}
 .datebox span{display:block; font-size:10.5px; font-weight:650; letter-spacing:.07em;
@@ -999,6 +1009,33 @@ function cardState(c){
     moved: spent > 0 || repaid > 0 || interest >= 1
   };
 }
+/** Give a card its place in the monthly list, creating the bill if needed. */
+function ensureCardBill(c){
+  const existing = cardBill(c);
+  if(existing) return existing;
+  if(!c.name.trim()) return null;
+  // an archived bill from a previous unlink comes back rather than duplicating
+  const prior = c.billId ? S.bills.find(b => b.id === c.billId) : null;
+  if(prior){ prior.archived = false; return prior; }
+  const dueDay = c.dueDay || c.statementDay || 1;
+  const bill = {
+    id:uid(), name:c.name, amount:c.minPayment || 0, currency:c.currency,
+    sourceId:(S.sources[0] || {}).id || "", dueDay,
+    freq:"monthly", anchorY:UI.y, anchorM:UI.m, endYear:null, note:"", archived:false
+  };
+  S.bills.push(bill); c.billId = bill.id;
+  return bill;
+}
+
+/** A linked card and bill are one thing to you, so they show one name —
+ *  the card's. Existing spellings on the bill are left alone in storage and
+ *  only normalised when you actually edit the name. */
+function displayName(c){ return (c.name || "").trim() || "Untitled card"; }
+function billDisplayName(b){
+  const c = S.cards.find(x => x.billId === b.id && !x.archived);
+  return c ? displayName(c) : b.name;
+}
+
 /** The bill a card is paid through, when there is one. */
 const cardBill = c => c.billId ? S.bills.find(b => b.id === c.billId && !b.archived) : null;
 
@@ -1313,12 +1350,12 @@ function tilesHTML(list){
     if(st === "today")   stat = '<span class="tile-stat" style="color:var(--warn)">Due today</span>';
     if(st === "soon")    stat = '<span class="tile-stat" style="color:var(--warn)">Due ' + MON3[UI.m] + ' ' + day + '</span>';
     return '<div class="tile" data-state="' + st + '">' +
-      '<button class="tile-check" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(b.name) + '">' +
+      '<button class="tile-check" data-tick="' + esc(b.id) + '" aria-label="Toggle paid for ' + esc(billDisplayName(b)) + '">' +
         '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
       '<button data-open="' + esc(b.id) + '" style="display:flex;flex-direction:column;align-items:stretch;flex:1;text-align:left;min-width:0">' +
         '<span class="tile-top"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
           '<span class="tile-src">' + esc(s.name) + '</span></span>' +
-        '<span class="tile-name">' + esc(b.name) + '</span>' +
+        '<span class="tile-name">' + esc(billDisplayName(b)) + '</span>' +
         '<span class="tile-amt num">' + (amt ? money(amt, b.currency) : "—") + '</span>' +
         stat +
       '</button></div>';
@@ -1421,10 +1458,10 @@ function rowHTML(b, pk){
       Math.min(100, (g.paid / g.target) * 100).toFixed(1) + '%"></i></span>' : '';
   return '<div class="row" data-state="' + st + '">' +
     '<button class="tick" data-tick="' + esc(b.id) + '" aria-label="' +
-      (st === "partial" ? 'Settle ' : 'Toggle paid for ') + esc(b.name) + '">' +
+      (st === "partial" ? 'Settle ' : 'Toggle paid for ') + esc(billDisplayName(b)) + '">' +
       '<span>' + (st === "skipped" ? I.minus : I.check) + '</span></button>' +
     '<button class="body" data-open="' + esc(b.id) + '">' +
-      '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
+      '<span class="info"><span class="name">' + esc(billDisplayName(b)) + '</span>' +
         '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
         (b.freq !== "monthly" ? '<span class="sep">·</span><span class="freq-tag">' + FREQ[b.freq].label + '</span>' : '') +
         (b.note ? '<span class="sep">·</span>' + esc(b.note) : '') +
@@ -1477,7 +1514,7 @@ function historyHTML(){
       const [, , dd] = p.date.split("-");
       out += '<button class="hrow" data-open="' + esc(b.id) + '" data-period="' + esc(p.period) + '">' +
         '<span class="hdate"><b class="num">' + Number(dd) + '</b>' + MON3[m-1] + '</span>' +
-        '<span class="info"><span class="name">' + esc(b.name) + '</span>' +
+        '<span class="info"><span class="name">' + esc(billDisplayName(b)) + '</span>' +
           '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
           '<span class="sep">·</span>' + (p.status === "paid" ? "Paid" : "Skipped") +
           (p.note ? '<span class="sep">·</span>' + esc(p.note) : '') + '</span></span>' +
@@ -1565,11 +1602,12 @@ function cardsHTML(){
       return '<button class="cardrow" data-card="' + esc(c.id) + '" data-level="' + s.level +
           '"' + (s.shaky ? ' data-shaky="1"' : '') + (over ? ' data-over="1"' : '') + '>' +
         '<span class="cardrow-top">' +
-          '<span class="cardname">' + esc(c.name) + '</span>' +
+          '<span class="cardname">' + esc(displayName(c)) + '</span>' +
           '<span class="cardavail num">' + head +
             (over ? '<em>over limit</em>' : s.shaky && s.avail != null ? '<em>approx</em>' : '') +
           '</span>' +
         '</span>' +
+        '<span class="roomlabel">' + (over ? 'over the limit' : 'room to spend') + '</span>' +
         '<span class="cardbar"><i style="width:' +
           (s.util == null ? 0 : Math.min(100, s.util * 100).toFixed(1)) + '%"></i></span>' +
         '<span class="cardrow-bot">' +
@@ -2059,6 +2097,7 @@ function renderSheet(){
   if(!b) return closeSheet();
   const pk = UI.sheetPeriod;
   const [py, pm] = pk.split("-").map(Number);
+  const ownerCard = S.cards.find(x => x.billId === b.id && !x.archived);
   const gp = progressOf(b, pk);
   const paysThis = paysFor(b.id, pk).filter(x => x.status === "paid");
   const due = dueDate(b, py, pm-1);
@@ -2160,6 +2199,11 @@ function renderSheet(){
       '<div class="fields">' +
         '<div class="field"><label for="bName">Name</label>' +
           '<input type="text" id="bName" placeholder="e.g. Apple Card" value="' + esc(b.name) + '"></div>' +
+        (ownerCard
+          ? '<div class="hint">Shown everywhere as &ldquo;' + esc(displayName(ownerCard)) +
+            '&rdquo;, the name on the card. <button class="linkbtn" data-opencard="' +
+            esc(ownerCard.id) + '">Open the card</button></div>'
+          : '') +
         '<div class="two">' +
           '<div class="field"><label for="bAmt">Usual amount</label>' +
             '<input type="number" inputmode="decimal" step="0.01" id="bAmt" value="' + (b.amount || 0) + '"></div>' +
@@ -2627,7 +2671,7 @@ function renderCardSheet(){
   const billOptions = '<option value="">Not linked</option>' +
     S.bills.filter(b => !b.archived).map(b =>
       '<option value="' + esc(b.id) + '"' + (b.id === c.billId ? " selected" : "") + '>' +
-      esc(b.name) + '</option>').join("");
+      esc(billDisplayName(b)) + '</option>').join("");
   const dueDayOptions = '<option value="0">Not set</option>' +
     Array.from({length:31}, (_,i) =>
       '<option value="' + (i+1) + '"' + (i+1 === dt.dueDay ? " selected" : "") + '>' +
@@ -2686,6 +2730,8 @@ function renderCardSheet(){
           '<i>' + (dt.statementIn == null ? 'no statement day'
                   : dt.statementIn === 0 ? 'today' : 'in ' + dt.statementIn + ' day' + (dt.statementIn===1?'':'s')) + '</i></div>' +
       '</div>' +
+      '<label class="rowtoggle"><span>Show in the monthly list</span>' +
+        '<input type="checkbox" id="cInList"' + (cm ? ' checked' : '') + '></label>' +
       (cm
         ? '<div class="mini" style="margin-top:11px">' +
             '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
@@ -2743,19 +2789,8 @@ function wireCardSheet(c){
   // Log a payment from the card, so a card can be run from one place. If it
   // is not in the monthly list yet, adding it there is part of the same tap.
   q("#cardPay").onclick = () => {
-    const dts = cardDates(c);
-    let bill = dts.bill;
-    if(!bill){
-      if(!c.name.trim()) return toast("Give the card a name first");
-      bill = {
-        id:uid(), name:c.name, amount:c.minPayment || 0, currency:c.currency,
-        sourceId:(S.sources[0] || {}).id || "", dueDay:dts.dueDay || c.statementDay || 1,
-        freq:"monthly", anchorY:UI.y, anchorM:UI.m, endYear:null,
-        note:"", archived:false
-      };
-      S.bills.push(bill); c.billId = bill.id;
-      toast("Added to the monthly list");
-    }
+    const bill = ensureCardBill(c);
+    if(!bill) return toast("Give the card a name first");
     const pk = periodKey(UI.y, UI.m);
     const g = progressOf(bill, pk);
     const suggest = g.left > 0 ? g.left : (c.minPayment || bill.amount || 0);
@@ -2789,11 +2824,34 @@ function wireCardSheet(c){
     patch(); reflow(); toast("Logged " + money(n, c.currency));
   };
 
-  q("#cName").onchange  = e => { c.name = e.target.value.trim(); $("#sheetTitle").textContent = c.name || "New card"; patch(); };
+  q("#cName").onchange  = e => {
+    c.name = e.target.value.trim();
+    const b = cardBill(c);
+    if(b && c.name) b.name = c.name;          // one name, not two
+    $("#sheetTitle").textContent = c.name || "New card"; patch();
+  };
   q("#cLimit").onchange = e => { c.limit = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
   q("#cCur").onchange   = e => { c.currency = e.target.value; reflow(); patch(); };
   q("#cApr").onchange   = e => { c.apr = Math.max(0, parseFloat(e.target.value) || 0); reflow(); patch(); };
   q("#cStmt").onchange  = e => { c.statementDay = parseInt(e.target.value,10) || 0; reflow(); patch(); };
+  q("#cInList").onchange = e => {
+    if(e.target.checked){
+      if(!ensureCardBill(c)){ e.target.checked = false; return toast("Give the card a name first"); }
+      toast("Added to the monthly list");
+    }else{
+      const b = cardBill(c);
+      if(b){
+        const n = S.payments.filter(p => p.billId === b.id).length;
+        if(n && !confirm("Hide it from the monthly list? Its " + n + " recorded payment" +
+            (n === 1 ? "" : "s") + " stay in history and it can come back later.")){
+          e.target.checked = true; return;
+        }
+        b.archived = true;                     // hidden, never destroyed
+      }
+      toast("Hidden from the monthly list");
+    }
+    save(); reflow();
+  };
   q("#cDue").onchange   = e => {
     c.dueDay = parseInt(e.target.value,10) || 0;
     const b = cardBill(c);                    // keep the bill on the same date
@@ -2844,7 +2902,7 @@ function openLoan(loanId){
   const billOptions = '<option value="">Not linked</option>' +
     S.bills.filter(b => !b.archived).map(b =>
       '<option value="' + esc(b.id) + '"' + (b.id === l.billId ? " selected" : "") + '>' +
-      esc(b.name) + '</option>').join("");
+      esc(billDisplayName(b)) + '</option>').join("");
 
   $("#sheetBody").innerHTML =
     '<div class="sec"><span class="eyebrow">Outstanding</span>' +
@@ -3183,7 +3241,7 @@ function openData(){
     '<div class="sec"><span class="eyebrow">Archived bills</span>' +
       (S.bills.filter(b => b.archived).length
         ? '<div class="mini">' + S.bills.filter(b => b.archived).map(b =>
-            '<div class="mini-row"><span>' + esc(b.name) + '</span>' +
+            '<div class="mini-row"><span>' + esc(billDisplayName(b)) + '</span>' +
             '<button class="a" data-unarch="' + esc(b.id) + '" style="color:var(--accent);font-weight:600">Restore</button></div>').join("") + '</div>'
         : '<div class="hint">None.</div>') +
     '</div>' +
@@ -3403,6 +3461,8 @@ $("#addBtn").onclick = () => {
 };
 $("#dataBtn").onclick = openData;
 $("#sheetBody").addEventListener("click", e => {
+  const oc = e.target.closest("[data-opencard]");
+  if(oc){ openCard(oc.dataset.opencard); return; }
   const del = e.target.closest("[data-delmove]");
   if(!del) return;
   S.spends = S.spends.filter(x => x.id !== del.dataset.delmove);
