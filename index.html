@@ -174,6 +174,13 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 
 /* ── view toggle ────────────────────────────────────────────────── */
 .controls{display:flex; align-items:center; gap:8px; padding:9px 16px 9px 0}
+.controls .active-filter{flex:none; margin-left:16px; background:var(--ink);
+  border-color:var(--ink); color:var(--paper); gap:5px}
+.active-filter .fx{width:12px; height:12px; fill:none; stroke:currentColor; stroke-width:2;
+  stroke-linejoin:round; flex:none}
+.active-filter .fx.x{opacity:.75}
+.controls .active-filter + .filters{padding-left:8px}
+.icon-btn.on{background:var(--accent-soft); color:var(--accent)}
 .controls .filters{flex:1; min-width:0; padding:0 0 0 16px}
 .vtog{display:flex; gap:2px; padding:2px; background:var(--surface-2);
   border:1px solid var(--line); border-radius:9px}
@@ -400,6 +407,45 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .cardrow[data-level="watch"] .cardbar i{background:var(--accent)}
 .cardrow[data-level="tight"] .cardbar i{background:var(--warn)}
 .cardrow[data-level="maxed"] .cardbar i{background:var(--bad)}
+/* owed against held */
+.owedbar{background:var(--surface); border-bottom:1px solid var(--line); padding:12px 16px;
+  display:flex; flex-direction:column; gap:10px}
+.owedrow{display:grid; grid-template-columns:1fr 1fr; gap:10px}
+.owedcell{border:1px solid var(--line); border-radius:11px; padding:9px 11px; background:var(--surface-2)}
+.owedcell span{display:block; font-size:10px; font-weight:650; letter-spacing:.07em;
+  text-transform:uppercase; color:var(--muted)}
+.owedcell b{display:block; font-size:19px; font-weight:600; letter-spacing:-.02em; margin-top:2px}
+.owedcell.owe b{color:var(--bad)}
+.owedcell.have b{color:var(--ok)}
+
+/* collapsible month summary */
+.summaryfold{background:var(--surface); border-bottom:1px solid var(--line)}
+.summaryfold > summary{display:flex; align-items:center; gap:10px; padding:12px 16px;
+  cursor:pointer; list-style:none; min-height:46px}
+.summaryfold > summary::-webkit-details-marker{display:none}
+.sfsum{font-size:15px; font-weight:600; letter-spacing:-.01em;
+  font-variant-numeric:tabular-nums}
+.summaryfold[open] > summary{border-bottom:1px solid var(--line-soft)}
+.summaryfold .summary{border-bottom:0}
+
+/* collapsible card settings inside the sheet */
+.setfold{padding:0; border-bottom:1px solid var(--line-soft)}
+.setfold > summary{display:flex; align-items:center; gap:10px; padding:15px 0;
+  cursor:pointer; list-style:none; min-height:46px}
+.setfold > summary::-webkit-details-marker{display:none}
+.setfold .fields{padding-bottom:16px}
+
+/* compact card tiles */
+.cardtiles{display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:9px; padding:12px 16px 4px}
+.cardtiles .cardrow{padding:11px 11px 10px 13px}
+.cardtiles .cardname{font-size:13px; display:block; margin-bottom:5px}
+.cardtiles .cardavail{margin-left:0; display:block; font-size:17px; text-align:left}
+.cardtiles .roomlabel{text-align:left; font-size:9px; margin-top:0}
+.cardtiles .cardbar{margin:8px 0 6px}
+.cardtiles .cardrow-bot{font-size:10.5px}
+.cardtiles .duetag{margin-left:4px; font-size:9px}
+@media (max-width:340px){ .cardtiles{grid-template-columns:1fr} }
+
 .roomlabel{display:block; font-size:10px; font-weight:650; letter-spacing:.07em;
   text-transform:uppercase; color:var(--muted); text-align:right; margin-top:-1px}
 .cardrow[data-over="1"] .roomlabel{color:var(--bad)}
@@ -685,6 +731,9 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
       <button class="icon-btn" id="themeBtn" aria-label="Switch theme">
         <svg viewBox="0 0 24 24"><path d="M12 3v1.5M12 19.5V21M3 12h1.5M19.5 12H21M5.6 5.6l1.1 1.1M17.3 17.3l1.1 1.1M18.4 5.6l-1.1 1.1M6.7 17.3l-1.1 1.1"/><circle cx="12" cy="12" r="3.8"/></svg>
       </button>
+      <button class="icon-btn" id="histBtn" aria-label="Payment history">
+        <svg viewBox="0 0 24 24"><path d="M3.5 12a8.5 8.5 0 1 0 2.6-6.1"/><path d="M3.5 4.5V9H8"/><path d="M12 7.5V12l3 2"/></svg>
+      </button>
       <button class="icon-btn" id="dataBtn" aria-label="Backup and data">
         <svg viewBox="0 0 24 24"><ellipse cx="12" cy="6" rx="7.5" ry="3"/><path d="M4.5 6v12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3V6M4.5 12c0 1.66 3.36 3 7.5 3s7.5-1.34 7.5-3"/></svg>
       </button>
@@ -700,7 +749,6 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
     </div>
     <div class="tabs" role="tablist">
       <button class="tab" role="tab" data-view="ledger" aria-selected="true">This month</button>
-      <button class="tab" role="tab" data-view="history" aria-selected="false">History</button>
       <button class="tab" role="tab" data-view="cards" aria-selected="false">Cards</button>
     </div>
   </header>
@@ -1291,14 +1339,19 @@ function summaryHTML(list){
              esc(s.name) + ' <b>' + money(amt, cur) + '</b></span>';
     })).join("");
 
-  return '<div class="summary">' + rows +
+  return '<details class="summaryfold" data-fold="sum"' + (S.sumOpen === false ? '' : ' open') + '>' +
+    '<summary><span class="sfsum">' + order.map(cur => {
+      const g = groups[cur];
+      return money(g.left, cur);
+    }).join(' &middot; ') + ' left</span><span class="chev" aria-hidden="true"></span></summary>' +
+    '<div class="summary">' + rows +
     (chips
       ? '<details class="srcfold"' + (S.srcOpen ? ' open' : '') + ' data-fold="src">' +
           '<summary><span>What comes out of each account</span>' +
           '<span class="chev" aria-hidden="true"></span></summary>' +
           '<div class="by-src">' + chips + '</div></details>'
       : '') +
-  '</div>';
+  '</div></details>';
 }
 
 /* ── render: filters ────────────────────────────────────────────── */
@@ -1311,7 +1364,19 @@ function filtersHTML(){
     '<i class="dot" style="background:' + x.color + '"></i>' + esc(x.name) + '</button>').join("");
   const clear = UI.src !== "all"
     ? '<button class="chip" data-f="src" data-v="all" aria-pressed="false">Clear source</button>' : "";
-  return '<div class="controls"><div class="filters">' + c + s + clear + '</div>' +
+  // An active filter used to sit somewhere in a scrolling row, easy to miss
+  // and easy to blame on the app hiding rows. Pin it in front, always visible.
+  let active = "";
+  if(UI.src !== "all" || UI.cur !== "all"){
+    const bits = [];
+    if(UI.cur !== "all") bits.push(UI.cur === "INR" ? "India ₹" : "US $");
+    if(UI.src !== "all") bits.push(srcOf(UI.src).name);
+    active = '<button class="chip active-filter" data-f="clear" data-v="all">' +
+      '<svg viewBox="0 0 24 24" class="fx"><path d="M4 5h16l-6 7v5l-4 2v-7z"/></svg>' +
+      esc(bits.join(" · ")) +
+      '<svg viewBox="0 0 24 24" class="fx x"><path d="M6 6l12 12M18 6L6 18"/></svg></button>';
+  }
+  return '<div class="controls">' + active + '<div class="filters">' + c + s + clear + '</div>' +
     viewbarHTML() + '</div>';
 }
 
@@ -1555,7 +1620,21 @@ function cardsHTML(){
     const g = byCur[c.currency] || (byCur[c.currency] = {avail:0, limit:0, shaky:0});
     g.avail += s.avail; g.limit += s.limit; if(s.shaky) g.shaky++;
   }
-  let out = '<div class="summary">' + Object.entries(byCur).map(([cur,g]) =>
+  // owed against held, per currency — the two numbers that frame everything else
+  const owed = {}, held = {};
+  for(const [c,st] of states) owed[c.currency] = (owed[c.currency] || 0) + st.estimate;
+  for(const l of activeLoans()) owed[l.currency] = (owed[l.currency] || 0) + loanState(l).estimate;
+  for(const a2 of S.accounts) held[a2.currency] = (held[a2.currency] || 0) + accountState(a2).estimate;
+  const owedCurs = [...new Set([...Object.keys(owed), ...Object.keys(held)])].sort();
+  let out = '<div class="owedbar">' + owedCurs.map(cur =>
+    '<div class="owedrow">' +
+      '<div class="owedcell owe"><span>Owed</span><b class="num">' +
+        money(owed[cur] || 0, cur) + '</b></div>' +
+      '<div class="owedcell have"><span>In accounts</span><b class="num">' +
+        money(held[cur] || 0, cur) + '</b></div>' +
+    '</div>').join("") + '</div>';
+
+  out += '<div class="summary">' + Object.entries(byCur).map(([cur,g]) =>
     '<div class="tot-row"><div class="tot-head">' +
       '<span class="tot-cur">' + (cur === "INR" ? "India" : "US") + ' &middot; room to spend</span>' +
       '<span class="tot-amt num">' + money(Math.max(0, g.avail), cur) + '</span></div>' +
@@ -1572,13 +1651,26 @@ function cardsHTML(){
       '<button data-act="fixstale">Fix</button></div>';
   }
 
+  const tiles = S.cardView !== "list";
+  out += '<div class="controls" style="padding-left:16px">' +
+    '<span class="eyebrow" style="margin-right:auto">' + cards.length + ' cards</span>' +
+    '<div class="vtog">' +
+      '<button data-cardview="list" aria-pressed="' + (!tiles) + '" aria-label="List view">' +
+        '<svg viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></svg></button>' +
+      '<button data-cardview="tiles" aria-pressed="' + tiles + '" aria-label="Tile view">' +
+        '<svg viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/>' +
+        '<rect x="13.5" y="3.5" width="7" height="7" rx="1.5"/>' +
+        '<rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/>' +
+        '<rect x="13.5" y="13.5" width="7" height="7" rx="1.5"/></svg></button>' +
+    '</div></div>';
+
   out += cardGroups().map(([cur, list]) =>
     (cardGroups().length > 1
       ? '<div class="group-head" style="padding-top:14px"><span class="eyebrow">' +
         (cur === "INR" ? "India ₹" : "US $") + '</span><span class="rule"></span>' +
         '<span class="cnt">' + list.length + '</span></div>'
       : '') +
-    '<div class="cardlist">' + list.map(c => {
+    '<div class="' + (tiles ? "cardtiles" : "cardlist") + '">' + list.map(c => {
       const s = cardState(c);
       const gap = cardGap(c, s);
       const over = s.avail != null && s.avail < 0;
@@ -1599,6 +1691,16 @@ function cardsHTML(){
         : dts.dueIn == null ? ''
         : '<i class="duetag' + (dts.dueIn <= 3 ? ' soon' : '') + '">due ' +
           MON3[dts.due.getMonth()] + ' ' + dts.due.getDate() + '</i>';
+      if(tiles) return '<button class="cardrow tile-c" data-card="' + esc(c.id) + '" data-level="' + s.level +
+          '"' + (s.shaky ? ' data-shaky="1"' : '') + (over ? ' data-over="1"' : '') + '>' +
+        '<span class="cardname">' + esc(displayName(c)) + '</span>' +
+        '<span class="cardavail num">' + head + '</span>' +
+        '<span class="roomlabel">' + (over ? 'over the limit' : 'room to spend') + '</span>' +
+        '<span class="cardbar"><i style="width:' +
+          (s.util == null ? 0 : Math.min(100, s.util * 100).toFixed(1)) + '%"></i></span>' +
+        '<span class="cardrow-bot"><span class="chip-level">' +
+          (s.util == null ? '—' : Math.round(s.util * 100) + '%') + duetag + '</span></span>' +
+      '</button>';
       return '<button class="cardrow" data-card="' + esc(c.id) + '" data-level="' + s.level +
           '"' + (s.shaky ? ' data-shaky="1"' : '') + (over ? ' data-over="1"' : '') + '>' +
         '<span class="cardrow-top">' +
@@ -1742,6 +1844,7 @@ function render(){
     (UI.y === now.getFullYear() && UI.m === now.getMonth() ? "<small>this month</small>" : "<small>&nbsp;</small>");
   document.querySelectorAll(".tab").forEach(t =>
     t.setAttribute("aria-selected", String(t.dataset.view === UI.view)));
+  $("#histBtn").classList.toggle("on", UI.view === "history");
   $("#main").innerHTML = UI.view === "cards" ? cardsHTML()
                        : UI.view === "ledger" ? ledgerHTML() : historyHTML();
   $("#addBtn").style.display = UI.view === "ledger" ? "flex" : "none";
@@ -2746,7 +2849,10 @@ function renderCardSheet(){
         : '<div class="hint" style="margin-top:11px">Not in the monthly list yet. Logging a payment adds it, so it shows up with your other bills.</div>') +
     '</div>' +
 
-    '<div class="sec"><span class="eyebrow">Card settings</span><div class="fields">' +
+    '<details class="sec setfold"' + (S.cardSetOpen ? ' open' : '') + ' data-fold="cardset">' +
+      '<summary><span class="eyebrow">Card settings</span>' +
+      '<span class="foldsum">limit, APR, dates</span>' +
+      '<span class="chev" aria-hidden="true"></span></summary><div class="fields">' +
       '<div class="field"><label for="cName">Name</label>' +
         '<input type="text" id="cName" placeholder="e.g. Apple Card" value="' + esc(c.name) + '"></div>' +
       '<div class="two">' +
@@ -2771,7 +2877,7 @@ function renderCardSheet(){
       '<div class="field"><label for="cBill">Paid by which bill</label>' +
         '<select id="cBill">' + billOptions + '</select></div>' +
       '<div class="hint">Link it and payments you record in the ledger come off this balance automatically.</div>' +
-    '</div></div>' +
+    '</div></details>' +
 
     '<div class="sec">' +
       '<button class="ghost" id="cardArch">' + (c.archived ? "Restore this card" : "Archive (hide it)") + '</button>' +
@@ -3381,7 +3487,9 @@ $("#main").addEventListener("toggle", e => {
   const d = e.target.closest && e.target.closest("[data-fold]");
   if(d){
     const f = d.dataset.fold;
-    S[f === "src" ? "srcOpen" : f.startsWith("plan") ? "planOpen" : "settledOpen"] = d.open;
+    if(f === "cardset"){ S.cardSetOpen = d.open; saveLocal(); return; }
+    S[f === "src" ? "srcOpen" : f === "sum" ? "sumOpen"
+      : f.startsWith("plan") ? "planOpen" : "settledOpen"] = d.open;
     saveLocal();
   }
 }, true);
@@ -3423,6 +3531,8 @@ $("#main").addEventListener("click", e => {
   }
   const mode = e.target.closest("[data-mode]");
   if(mode){ S.viewMode = mode.dataset.mode; save(); render(); return; }
+  const cv = e.target.closest("[data-cardview]");
+  if(cv){ S.cardView = cv.dataset.cardview; save(); render(); return; }
   const tick = e.target.closest("[data-tick]");
   if(tick){
     const id = tick.dataset.tick, pk = periodKey(UI.y, UI.m);
@@ -3444,6 +3554,7 @@ document.addEventListener("click", e => {
   const chip = e.target.closest(".chip[data-f]");
   if(!chip) return;
   const {f, v} = chip.dataset;
+  if(f === "clear"){ UI.cur = "all"; UI.src = "all"; }
   if(f === "cur") UI.cur = v;
   if(f === "src") UI.src = (UI.src === v ? "all" : v);
   render();
@@ -3459,7 +3570,13 @@ $("#addBtn").onclick = () => {
   openSheet(b.id);
   setTimeout(() => { const el = $("#bName"); if(el) el.focus(); }, 280);
 };
+$("#histBtn").onclick = () => { UI.view = UI.view === "history" ? "ledger" : "history"; render(); };
 $("#dataBtn").onclick = openData;
+$("#sheetBody").addEventListener("toggle", e => {
+  const d = e.target.closest && e.target.closest("[data-fold=\"cardset\"]");
+  if(d){ S.cardSetOpen = d.open; saveLocal(); }
+}, true);
+
 $("#sheetBody").addEventListener("click", e => {
   const oc = e.target.closest("[data-opencard]");
   if(oc){ openCard(oc.dataset.opencard); return; }
