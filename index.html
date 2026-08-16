@@ -815,7 +815,8 @@ function seed(){
   const d0 = new Date();
   return {
     version:1, sources, bills, payments:[], theme:null, viewMode:"list", lastBackup:null,
-    updatedAt: d0.getTime(),
+    updatedAt: 0,          // a fresh seed must never win a sync race
+    pristine: true,
     cards:[], spends:[], statements:[], loans:[], accounts:[],
     sync:{on:false, owner:"", repo:"", path:"bill-ledger.json", sha:null, at:null, err:null},
     // months before this are "not tracked yet", not overdue
@@ -840,8 +841,18 @@ function saveLocal(){
 /** Local write + a debounced push to GitHub when sync is switched on. */
 function save(){
   S.updatedAt = Date.now();
+  S.pristine = false;        // this ledger has been used
   saveLocal();
   scheduleSync();
+}
+/** Nothing has ever been entered here. Such a state must never overwrite a
+ *  remote that has data — this is exactly how a cleared browser wiped a
+ *  synced ledger. */
+function isPristine(){
+  return !!S.pristine || !(
+    (S.bills || []).length || (S.cards || []).length || (S.payments || []).length ||
+    (S.loans || []).length || (S.accounts || []).length || (S.spends || []).length
+  );
 }
 
 const S = load();
@@ -1300,6 +1311,7 @@ function sanitize(d){
     viewMode:   d.viewMode === "tiles" ? "tiles" : "list",
     startPeriod:sPeriod(d.startPeriod),
     updatedAt:  sNum(d.updatedAt, Date.now()),
+    pristine:   false,
     exportedAt: sStr(d.exportedAt, 40)
   };
 }
@@ -2129,6 +2141,12 @@ async function syncPull(){
 }
 async function syncPush(){
   const c = syncCfg();
+  // Refuse to replace a remote that exists with a ledger holding nothing.
+  // Emptying it deliberately goes through Reset, which sets the override.
+  if(isPristine() && c.sha && !S.allowEmptyPush){
+    c.err = "Refused to overwrite your synced data with an empty ledger";
+    return;
+  }
   const body = {
     message: "Ledger update — " + new Date().toISOString().slice(0, 16).replace("T", " "),
     content: b64enc(payload())
@@ -2190,11 +2208,21 @@ async function syncBoot(){
   syncing = true; render();
   try{
     const r = await syncPull();
-    if(r.empty){ await syncPush(); }
-    else{
-      const remoteAt = r.data.updatedAt || 0, localAt = S.updatedAt || 0;
-      if(remoteAt > localAt){
-        adopt(r.data);
+    if(r.empty){
+      if(!isPristine()) await syncPush();      // never create a remote from nothing
+    }else{
+      const d = r.data;
+      const remoteHas = (d.bills || []).length || (d.cards || []).length ||
+                        (d.payments || []).length || (d.loans || []).length ||
+                        (d.accounts || []).length;
+      const remoteAt = d.updatedAt || 0, localAt = S.updatedAt || 0;
+      // A local ledger with nothing in it always loses, whatever the clocks say.
+      if(isPristine() && remoteHas){
+        adopt(d);
+        S.pristine = false;
+        S.lastBackup = {at:new Date().toISOString(), sig:signature()};
+      }else if(remoteAt > localAt){
+        adopt(d);
         S.lastBackup = {at:new Date().toISOString(), sig:signature()};
       }else if(localAt > remoteAt){
         await syncPush();
@@ -3542,7 +3570,10 @@ function openData(){
   });
   body.querySelector("#resetBtn").onclick = () => {
     if(!confirm("Erase all bills and payment history, and reload the starter list?")) return;
-    Object.assign(S, seed()); save(); closeSheet(); toast("Reset");
+    const keepSync = S.sync;
+    Object.assign(S, seed());
+    S.sync = keepSync; S.allowEmptyPush = true;   // this emptying is deliberate
+    save(); closeSheet(); toast("Reset");
   };
 
   $("#scrim").classList.add("on");
