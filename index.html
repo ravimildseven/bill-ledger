@@ -320,6 +320,11 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .stat.missed{color:var(--bad)}
 .stat.soon{color:var(--warn)}
 .stat.today{color:var(--warn); font-weight:700}
+.stat.scheduled{color:var(--accent); font-weight:600}
+.group[data-gstate="scheduled"] .eyebrow em{background:var(--accent-soft); color:var(--accent)}
+.group[data-gstate="scheduled"] .row{box-shadow:inset 3px 0 0 var(--accent)}
+.row[data-state="scheduled"]{box-shadow:inset 3px 0 0 var(--accent)}
+.tile[data-state="scheduled"]::before{background:var(--accent)}
 .stat.partial{color:var(--accent); font-weight:600}
 .amt-col em{font-style:normal; font-size:9.5px; font-weight:600; color:var(--muted);
   display:block; letter-spacing:.05em; text-transform:uppercase; margin-top:1px}
@@ -504,6 +509,8 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
   border:1px solid var(--line); color:var(--muted)}
 .duetag.soon{background:var(--warn-soft); border-color:var(--warn); color:var(--warn)}
 .duetag.ok{background:var(--ok-soft); border-color:var(--ok); color:var(--ok)}
+.duetag.sched{background:var(--accent-soft); border-color:var(--accent); color:var(--accent)}
+.schednote{font-size:11.5px; color:var(--accent); font-weight:600; margin:-2px 0 4px 26px}
 .cardacts .ghost{margin-top:0}
 
 /* ── settled collapser ──────────────────────────────────────────── */
@@ -897,17 +904,28 @@ function payFor(billId, pk){ return paysFor(billId, pk)[0]; }
  *  for less than its usual amount, and a bill with no set amount can only be
  *  closed this way. Records written before part-payments existed have no
  *  `final` field and are treated as closing, so old data reads unchanged. */
+/** A payment dated ahead of today is arranged but has not left the account
+ *  yet, so it must not reduce any balance — it just stops the bill reading
+ *  as overdue. Once the date arrives it counts on its own. */
+const isScheduled = p => (p.date || "") > todayISO;
+
 function progressOf(b, pk){
   const pays = paysFor(b.id, pk);
-  if(!pays.length) return {none:true, paid:0, target:b.amount || 0, left:b.amount || 0, n:0};
+  if(!pays.length) return {none:true, paid:0, scheduled:0, target:b.amount || 0, left:b.amount || 0, n:0};
   if(pays.some(p => p.status === "skipped"))
-    return {skipped:true, paid:0, target:b.amount || 0, left:0, n:pays.length};
-  const paid   = pays.reduce((t,p) => t + (p.amount || 0), 0);
+    return {skipped:true, paid:0, scheduled:0, target:b.amount || 0, left:0, n:pays.length};
+
+  const settled = pays.filter(p => !isScheduled(p));
+  const ahead   = pays.filter(isScheduled);
+  const paid      = settled.reduce((t,p) => t + (p.amount || 0), 0);
+  const scheduled = ahead.reduce((t,p) => t + (p.amount || 0), 0);
   const target = b.amount || 0;
-  const closed = pays.some(p => p.final !== false);
+  const closed = settled.some(p => p.final !== false);
   const done   = closed || (target > 0 && paid >= target - 0.005);
+  const covered = !done && target > 0 && paid + scheduled >= target - 0.005;
   return {
-    paid, target, n:pays.length, closed, done,
+    paid, scheduled, target, n:pays.length, nAhead:ahead.length, closed, done, covered,
+    nextDate: ahead.length ? ahead.map(p => p.date).sort()[0] : null,
     left: done ? 0 : Math.max(0, target - paid),
     partial: !done && paid > 0
   };
@@ -925,7 +943,9 @@ function stateOf(b, y, m){
   const g = progressOf(b, pk);
   if(g.skipped) return "skipped";
   if(g.done)    return "paid";
+  if(g.covered) return "scheduled";    // arranged ahead — not overdue
   if(g.partial) return "partial";      // part-paid still counts as outstanding
+  if(g.scheduled > 0) return "scheduled";
   if(S.startPeriod && pk < S.startPeriod) return "due";  // before you started tracking
   const d = dueDate(b, y, m);
   const t = new Date(); t.setHours(0,0,0,0);
@@ -1020,7 +1040,8 @@ function cardState(c){
   // the same day it was confirmed, which silently did nothing.
   const spent = cardSpends(c.id).reduce((n,s) => n + (s.amount || 0), 0);
   const repaid = c.billId
-    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" && afterConfirm(c, p))
+    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" &&
+                             !isScheduled(p) && afterConfirm(c, p))
                 .reduce((n,p) => n + (p.amount || 0), 0)
     : 0;
 
@@ -1293,11 +1314,12 @@ function summaryHTML(list){
   const pk = periodKey(UI.y, UI.m);
   const groups = {};
   for(const b of list){
-    const g = groups[b.currency] || (groups[b.currency] = {total:0,left:0,paid:0,skip:0,part:0,n:0,src:{}});
+    const g = groups[b.currency] || (groups[b.currency] = {total:0,left:0,paid:0,skip:0,part:0,sched:0,n:0,src:{}});
     const pr = progressOf(b, pk);
     g.n++;
     if(pr.skipped){ g.skip++; continue; }
     if(pr.done){ g.paid++; g.total += pr.paid; continue; }
+    if(pr.covered){ g.sched++; g.total += pr.paid + pr.scheduled; continue; }
     // outstanding: only what is still owed counts toward "still to pay"
     if(pr.partial) g.part++;
     g.total += Math.max(pr.target, pr.paid);
@@ -1323,7 +1345,8 @@ function summaryHTML(list){
         '<i class="skip" style="width:' + skipPct + '%"></i></div>' +
       '<div class="tot-sub">' + (open
         ? open + ' left &middot; ' + g.paid + ' of ' + g.n + ' cleared' +
-          (g.part ? ' &middot; ' + g.part + ' part-paid' : '')
+          (g.part ? ' &middot; ' + g.part + ' part-paid' : '') +
+          (g.sched ? ' &middot; ' + g.sched + ' arranged' : '')
         : 'all ' + g.n + ' settled') + '</div>' +
     '</div>';
   }).join("");
@@ -1410,6 +1433,8 @@ function tilesHTML(list){
     }
     if(st === "partial") stat = '<span class="tile-stat" style="color:var(--accent)">' +
       money(g.paid, b.currency) + ' paid · ' + g.n + '×</span>';
+    if(st === "scheduled"){ amt = g.scheduled;
+      stat = '<span class="tile-stat" style="color:var(--accent)">Paying ' + shortDate(g.nextDate) + '</span>'; }
     if(st === "skipped") stat = '<span class="tile-stat" style="color:var(--muted)">Skipped</span>';
     if(st === "missed")  stat = '<span class="tile-stat" style="color:var(--bad)">Overdue ' + MON3[UI.m] + ' ' + day + '</span>';
     if(st === "today")   stat = '<span class="tile-stat" style="color:var(--warn)">Due today</span>';
@@ -1468,9 +1493,11 @@ function ledgerHTML(){
   for(const [day, items] of [...byDay.entries()].sort((a,b) => a[0]-b[0])){
     // The whole group shares one due date, so its state belongs on the header
     // once rather than repeated down every row.
-    const gs = stateOf(items[0], UI.y, UI.m);
+    // a group is only overdue if something in it is actually unpaid
+    const gs = items.every(x => stateOf(x, UI.y, UI.m) === "scheduled")
+      ? "scheduled" : stateOf(items[0], UI.y, UI.m);
     const label = gs === "missed" ? "overdue" : gs === "today" ? "due today"
-                : gs === "soon"  ? "due soon" : "";
+                : gs === "soon"  ? "due soon" : gs === "scheduled" ? "arranged" : "";
     out += '<section class="group" data-gstate="' + gs + '"><div class="group-head">' +
       '<span class="eyebrow">' + MON3[UI.m] + ' ' + day +
         (label ? '<em>' + label + '</em>' : '') + '</span>' +
@@ -1512,6 +1539,10 @@ function rowHTML(b, pk){
     stat = '<span class="stat paid">' + (g.n > 1 ? g.n + ' payments' : 'Paid ' + shortDate(last && last.date)) + '</span>';
   }
   if(st === "skipped") stat = '<span class="stat skipped">Skipped</span>';
+  if(st === "scheduled"){
+    amt = g.scheduled;
+    stat = '<span class="stat scheduled">Paying ' + shortDate(g.nextDate) + '</span>';
+  }
   if(st === "partial"){
     amt = g.left;
     stat = '<span class="stat partial">' + money(g.paid, b.currency) +
@@ -1687,7 +1718,9 @@ function cardsHTML(){
       const dts = cardDates(c);
       const cmm = cardMonth(c);
       const paidThis = cmm && (cmm.state === "paid" || cmm.state === "skipped");
-      const duetag = paidThis ? '<i class="duetag ok">paid</i>'
+      const duetag = cmm && cmm.state === "scheduled"
+          ? '<i class="duetag sched">paying ' + shortDate(cmm.progress.nextDate) + '</i>'
+        : paidThis ? '<i class="duetag ok">paid</i>'
         : dts.dueIn == null ? ''
         : '<i class="duetag' + (dts.dueIn <= 3 ? ' soon' : '') + '">due ' +
           MON3[dts.due.getMonth()] + ' ' + dts.due.getDate() + '</i>';
@@ -2437,7 +2470,8 @@ function loanState(l){
   const conf = l.confirmedAt ? new Date(l.confirmedAt + "T00:00:00") : null;
   const age  = conf ? Math.max(0, daysBetween(conf, t)) : null;
   const repaid = l.billId
-    ? S.payments.filter(p => p.billId === l.billId && p.status === "paid" && afterConfirm(l, p))
+    ? S.payments.filter(p => p.billId === l.billId && p.status === "paid" &&
+                             !isScheduled(p) && afterConfirm(l, p))
                 .reduce((n,p) => n + (p.amount || 0), 0)
     : 0;
   const interest = (l.apr && age) ? (l.balance || 0) * (l.apr / 100 / 365) * age : 0;
@@ -2470,7 +2504,8 @@ function accountState(a){
   // bills paid from a source that draws on this account
   const srcIds = S.sources.filter(s => s.accountId === a.id).map(s => s.id);
   const paidOut = srcIds.length
-    ? S.payments.filter(p => p.status === "paid" && srcIds.includes(p.sourceId) && afterConfirm(a, p))
+    ? S.payments.filter(p => p.status === "paid" && srcIds.includes(p.sourceId) &&
+                             !isScheduled(p) && afterConfirm(a, p))
                 .reduce((n,p) => n + (p.amount || 0), 0)
     : 0;
 
@@ -2797,15 +2832,14 @@ function renderCardSheet(){
                    : 'No credit limit recorded') + '</div></div>' +
 
       '<div class="mini" style="margin-top:11px">' +
-        '<div class="mini-row"><span>Confirmed balance</span>' +
-          '<span class="a num">' + money(s.confirmed, c.currency) + '</span></div>' +
-        '<div class="mini-row"><span class="d" style="width:auto">as of</span>' +
+        '<div class="mini-row"><span><b>Balance now</b></span>' +
+          '<span class="a num" style="color:var(--ink)">' + money(s.estimate, c.currency) + '</span></div>' +
+        '<div class="mini-row"><span class="d" style="width:auto">last read from card app</span>' +
           '<span class="a" style="font-weight:500;color:var(--muted)">' +
-          (c.confirmedAt ? shortDate(c.confirmedAt) + (s.age ? ' · ' + s.age + 'd ago' : ' · today') : 'never') +
-          (c.confirmedFrom === "statement" ? ' · statement' : '') + '</span></div>' +
+          money(s.confirmed, c.currency) +
+          (c.confirmedAt ? ' · ' + shortDate(c.confirmedAt) : ' · never') + '</span></div>' +
         (s.moved
-          ? '<div class="mini-row"><span>Estimated today</span>' +
-            '<span class="a num" style="color:var(--accent)">' + money(s.estimate, c.currency) + '</span></div>' +
+          ? '' +
             (s.interest >= 1 ? '<div class="mini-row"><span class="d" style="width:auto">est. interest</span>' +
               '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.interest, c.currency) + '</span></div>' : '') +
             (s.spent ? '<div class="mini-row"><span class="d" style="width:auto">logged spend</span>' +
@@ -2814,7 +2848,7 @@ function renderCardSheet(){
               '<span class="a" style="font-weight:500;color:var(--ok)">−' + money(s.repaid, c.currency) + '</span></div>' : '')
           : '') +
       '</div>' +
-      (s.moved ? '<div class="hint" style="margin-top:8px">The estimate adds interest and anything logged since the confirmation. Only the confirmed figure comes from your card.</div>' : '') +
+      (s.moved ? '<div class="hint" style="margin-top:8px">Balance now already includes everything below — it updates the moment you log something. Re-read from the card app when you want to reset it against the bank.</div>' : '') +
       movesHTML(cardSpends(c.id), c.currency, "Since that reading") +
       '<button class="ghost" id="cardSpend" style="margin-top:11px">Log a spend</button>' +
       '<button class="ghost" id="cardPay">Log a payment</button>' +
@@ -2839,13 +2873,15 @@ function renderCardSheet(){
         ? '<div class="mini" style="margin-top:11px">' +
             '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
             '<span class="a num" style="color:' +
-              (cm.state === "paid" ? 'var(--ok)' : cm.state === "partial" ? 'var(--accent)' : 'var(--muted)') + '">' +
+              (cm.state === "paid" ? 'var(--ok)' : (cm.state === "partial" || cm.state === "scheduled") ? 'var(--accent)' : 'var(--muted)') + '">' +
               (cm.state === "paid" ? 'paid ' + money(cm.progress.paid, c.currency)
+               : cm.state === "scheduled" ? money(cm.progress.scheduled, c.currency) + ' set for ' + shortDate(cm.progress.nextDate)
                : cm.state === "partial" ? money(cm.progress.paid, c.currency) + ' of ' + money(cm.progress.target, c.currency)
                : cm.state === "skipped" ? 'nothing owed'
                : 'not yet') + '</span></div>' +
           '</div>' +
-          '<div class="hint" style="margin-top:7px">Tracked in the monthly list as “' + esc(cm.bill.name) + '”.</div>'
+          cardPayRows(cm) +
+          '<div class="hint" style="margin-top:7px">Dating a payment ahead marks it arranged: the bill stops reading overdue, and nothing comes off any balance until that day.</div>'
         : '<div class="hint" style="margin-top:11px">Not in the monthly list yet. Logging a payment adds it, so it shows up with your other bills.</div>') +
     '</div>' +
 
@@ -2905,8 +2941,10 @@ function wireCardSheet(c){
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
     if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
     // final only when it clears the expected amount, so part-payments stay open
-    addPayment(bill.id, pk, {amount:n, final: !(bill.amount > 0 && n < bill.amount - 0.005)});
-    save(); reflow(); toast("Paid " + money(n, c.currency));
+    addPayment(bill.id, pk, {amount:n,
+      final: !(bill.amount > 0 && n < bill.amount - 0.005)});
+    save(); reflow();
+    toast("Logged — set a later date below to arrange it ahead", 3800);
   };
 
   q("#cardConfirm").onclick = () => {
@@ -2975,6 +3013,28 @@ function wireCardSheet(c){
     S.statements = S.statements.filter(x => x.cardId !== c.id);
     save(); closeSheet(); toast("Deleted");
   };
+}
+
+/** This month's payments on a card, each with a real date control so one can
+ *  be pushed forward without typing a date into a prompt. */
+function cardPayRows(cm){
+  const pays = paysFor(cm.bill.id, cm.pk).filter(p => p.status === "paid");
+  if(!pays.length) return "";
+  const cur = cm.bill.currency;
+  return '<div class="paylist" style="margin-top:10px">' + pays.map((x,i) =>
+    '<div class="payrow" data-pay="' + esc(x.id) + '">' +
+      '<span class="payn num">' + (isScheduled(x) ? '&rarr;' : (i+1)) + '</span>' +
+      '<div class="payfields">' +
+        '<input type="date" data-pf="date" value="' + esc(x.date) + '" aria-label="Date of payment ' + (i+1) + '">' +
+        '<input type="number" inputmode="decimal" step="0.01" data-pf="amount" value="' +
+          (x.amount || 0) + '" aria-label="Amount of payment ' + (i+1) + '">' +
+      '</div>' +
+      '<button class="paydel" data-delpay="' + esc(x.id) + '" aria-label="Remove payment ' + (i+1) + '">' +
+        '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' +
+    '</div>' +
+    (isScheduled(x) ? '<div class="schednote">Arranged for ' + shortDate(x.date) +
+      ' &middot; ' + money(x.amount || 0, cur) + ' not deducted yet</div>' : '')
+  ).join("") + '</div>';
 }
 
 /** Timeline of hand-logged movements, newest first, each removable. */
@@ -3577,7 +3637,24 @@ $("#sheetBody").addEventListener("toggle", e => {
   if(d){ S.cardSetOpen = d.open; saveLocal(); }
 }, true);
 
+$("#sheetBody").addEventListener("change", e => {
+  const row = e.target.closest(".payrow");
+  if(!row || UI.sheet !== "card") return;
+  const rec = S.payments.find(x => x.id === row.dataset.pay);
+  if(!rec) return;
+  const f = e.target.dataset.pf;
+  if(f === "amount") rec.amount = Math.max(0, parseFloat(e.target.value) || 0);
+  else if(f === "date") rec.date = e.target.value || rec.date;
+  rec.updatedAt = new Date().toISOString();
+  save(); renderCardSheet(); render();
+});
+
 $("#sheetBody").addEventListener("click", e => {
+  const dp = e.target.closest("[data-delpay]");
+  if(dp && UI.sheet === "card"){
+    S.payments = S.payments.filter(x => x.id !== dp.dataset.delpay);
+    save(); renderCardSheet(); render(); return;
+  }
   const oc = e.target.closest("[data-opencard]");
   if(oc){ openCard(oc.dataset.opencard); return; }
   const del = e.target.closest("[data-delmove]");
