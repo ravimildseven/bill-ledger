@@ -1131,6 +1131,14 @@ function cardDates(c){
     dueIn: due ? daysBetween(t, due) : null
   };
 }
+/** Where a loan's payment for the month being viewed stands. */
+function loanMonth(l){
+  const bill = l.billId ? S.bills.find(b => b.id === l.billId && !b.archived) : null;
+  if(!bill) return null;
+  const pk = periodKey(UI.y, UI.m);
+  return {bill, pk, state: stateOf(bill, UI.y, UI.m), progress: progressOf(bill, pk)};
+}
+
 /** Where the card's payment for the month being viewed stands. */
 function cardMonth(c){
   const bill = cardBill(c);
@@ -1915,6 +1923,19 @@ function addPayment(billId, pk, {amount, date, sourceId, note, final} = {}){
   save();
   return p;
 }
+const tomorrowISO = () => { const d = new Date(); d.setDate(d.getDate() + 1); return iso(d); };
+
+/** Arrange a payment for a future date without pretending it has happened.
+ *  Defaults to tomorrow so one tap gets a bill out of overdue; the date can
+ *  then be moved with the picker. */
+function arrangePayment(bill, pk, amount){
+  const amt = amount == null ? (progressOf(bill, pk).left || bill.amount || 0) : amount;
+  return addPayment(bill.id, pk, {
+    amount: amt, date: tomorrowISO(),
+    final: !(bill.amount > 0 && amt < bill.amount - 0.005)
+  });
+}
+
 /** Close the month out at whatever has been paid so far. */
 function closePeriod(billId, pk){
   const pays = paysFor(billId, pk);
@@ -2285,16 +2306,22 @@ function renderSheet(){
       (gp.skipped
         ? '<div class="bstat clean"><i class="dot" style="background:var(--muted)"></i>' +
           '<span>Skipped this month</span></div>'
-        : '<div class="paystate ' + (gp.done ? "done" : gp.partial ? "part" : "open") + '">' +
+        : '<div class="paystate ' + (gp.done ? "done" : (gp.partial || gp.scheduled) ? "part" : "open") + '">' +
             '<div class="paystate-top">' +
-              '<span>' + (gp.done ? "Settled" : gp.partial ? "Still owed" : "To pay") + '</span>' +
-              '<b class="num">' + money(gp.done ? gp.paid : gp.left, b.currency) + '</b></div>' +
+              '<span>' + (gp.done ? "Settled"
+                          : gp.scheduled > 0 ? "Arranged for " + shortDate(gp.nextDate)
+                          : gp.partial ? "Still owed" : "To pay") + '</span>' +
+              '<b class="num">' + money(gp.done ? gp.paid : gp.scheduled > 0 ? gp.scheduled : gp.left, b.currency) + '</b></div>' +
             (gp.target ? '<span class="pbar big"><i style="width:' +
               Math.min(100, gp.target ? (gp.paid / gp.target) * 100 : 0).toFixed(1) + '%"></i></span>' : '') +
             '<div class="paystate-sub">' +
-              (gp.n
-                ? money(gp.paid, b.currency) + ' paid over ' + gp.n + ' payment' + (gp.n === 1 ? '' : 's') +
-                  (gp.target ? ' of ' + money(gp.target, b.currency) : '')
+              (gp.scheduled > 0 && !gp.paid
+                ? 'Nothing deducted until ' + shortDate(gp.nextDate) + ' — change the date below to move it'
+                : gp.n
+                ? money(gp.paid, b.currency) + ' paid over ' + gp.n + ' payment' +
+                  (gp.n === 1 ? '' : 's') +
+                  (gp.target ? ' of ' + money(gp.target, b.currency) : '') +
+                  (gp.scheduled > 0 ? ' · ' + money(gp.scheduled, b.currency) + ' arranged' : '')
                 : 'Nothing recorded yet' + (gp.target ? ' · ' + money(gp.target, b.currency) + ' expected' : '')) +
             '</div></div>') +
 
@@ -2319,6 +2346,7 @@ function renderSheet(){
 
       '<div class="payacts">' +
         '<button class="ghost" id="addPay">' + (gp.n ? "Add another payment" : "Record a payment") + '</button>' +
+        '<button class="ghost" id="arrangePay">Arrange for a date</button>' +
         (gp.done
           ? '<button class="ghost" id="reopenPay">Reopen this month</button>'
           : '<button class="ghost" id="settlePay">' +
@@ -2415,6 +2443,11 @@ function wireSheet(b, pk){
     // suggest whatever is still owed, so the common case is one tap
     addPayment(b.id, pk, {amount: g.left > 0 ? g.left : 0, final:false});
     reflow();
+  });
+  on("#arrangePay", "onclick", () => {
+    arrangePayment(b, pk);
+    reflow();
+    toast("Arranged for tomorrow — change the date below", 3800);
   });
   on("#settlePay", "onclick", () => { setStatus(b.id, pk, "paid"); reflow(); });
   on("#reopenPay", "onclick", () => {
@@ -2852,6 +2885,7 @@ function renderCardSheet(){
       movesHTML(cardSpends(c.id), c.currency, "Since that reading") +
       '<button class="ghost" id="cardSpend" style="margin-top:11px">Log a spend</button>' +
       '<button class="ghost" id="cardPay">Log a payment</button>' +
+      '<button class="ghost" id="cardArrange">Arrange a payment for later</button>' +
       '<button class="ghost" id="cardConfirm">Update balance from my card app</button>' +
     '</div>' +
 
@@ -2945,6 +2979,14 @@ function wireCardSheet(c){
       final: !(bill.amount > 0 && n < bill.amount - 0.005)});
     save(); reflow();
     toast("Logged — set a later date below to arrange it ahead", 3800);
+  };
+
+  q("#cardArrange").onclick = () => {
+    const bill = ensureCardBill(c);
+    if(!bill) return toast("Give the card a name first");
+    arrangePayment(bill, periodKey(UI.y, UI.m));
+    save(); reflow();
+    toast("Arranged for tomorrow — change the date below", 3800);
   };
 
   q("#cardConfirm").onclick = () => {
@@ -3063,7 +3105,8 @@ function openLoan(loanId){
     S.loans.push(l); save(); UI.loanDraft = true;
   }
   UI.loanId = l.id;
-  const s = loanState(l);
+  const s  = loanState(l);
+  const lm = loanMonth(l);
   $("#sheetTitle").textContent = l.name || "New loan";
   const billOptions = '<option value="">Not linked</option>' +
     S.bills.filter(b => !b.archived).map(b =>
@@ -3087,7 +3130,22 @@ function openLoan(loanId){
           (s.repaid ? '<div class="mini-row"><span class="d" style="width:auto">payments since</span>' +
             '<span class="a" style="font-weight:500;color:var(--ok)">−' + money(s.repaid, l.currency) + '</span></div>' : '') +
           '</div>' : '') +
-      '<button class="primary" id="loanConfirm" style="margin-top:11px">Update balance from the lender</button>' +
+      '<button class="ghost" id="loanPay" style="margin-top:11px">Log a payment</button>' +
+      '<button class="ghost" id="loanArrange">Arrange a payment for later</button>' +
+      '<button class="ghost" id="loanConfirm">Update balance from the lender</button>' +
+      (lm
+        ? '<div class="mini" style="margin-top:11px">' +
+            '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
+            '<span class="a num" style="color:' +
+              (lm.state === "paid" ? 'var(--ok)' : (lm.state === "partial" || lm.state === "scheduled") ? 'var(--accent)' : 'var(--muted)') + '">' +
+              (lm.state === "paid" ? 'paid ' + money(lm.progress.paid, l.currency)
+               : lm.state === "scheduled" ? money(lm.progress.scheduled, l.currency) + ' set for ' + shortDate(lm.progress.nextDate)
+               : lm.state === "partial" ? money(lm.progress.paid, l.currency) + ' of ' + money(lm.progress.target, l.currency)
+               : lm.state === "skipped" ? 'nothing owed'
+               : 'not yet') + '</span></div></div>' +
+          cardPayRows(lm) +
+          '<div class="hint" style="margin-top:7px">Dating a payment ahead marks it arranged: the bill stops reading overdue, and nothing comes off the balance until that day.</div>'
+        : '<div class="hint" style="margin-top:9px">Link this loan to the bill that pays it, below, and payments can be logged and arranged from here.</div>') +
     '</div>' +
 
     '<div class="sec"><span class="eyebrow">Loan settings</span><div class="fields">' +
@@ -3120,6 +3178,28 @@ function openLoan(loanId){
   const body = $("#sheetBody"), q = id => body.querySelector(id);
   const patch = () => { save(); render(); };
   const reflow = () => { openLoan(l.id); render(); };
+  const loanBillOrWarn = () => {
+    const b2 = lm && lm.bill;
+    if(!b2) toast("Link this loan to a bill first, below");
+    return b2;
+  };
+  if(q("#loanPay")) q("#loanPay").onclick = () => {
+    const b2 = loanBillOrWarn(); if(!b2) return;
+    const pk = periodKey(UI.y, UI.m);
+    const g = progressOf(b2, pk);
+    const suggest = g.left > 0 ? g.left : (l.minPayment || b2.amount || 0);
+    const v = prompt("Payment on " + (l.name || "this loan") + ":", String(Math.round(suggest * 100) / 100));
+    if(v === null) return;
+    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
+    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
+    addPayment(b2.id, pk, {amount:n, final: !(b2.amount > 0 && n < b2.amount - 0.005)});
+    save(); reflow(); toast("Logged — set a later date below to arrange it ahead", 3800);
+  };
+  if(q("#loanArrange")) q("#loanArrange").onclick = () => {
+    const b2 = loanBillOrWarn(); if(!b2) return;
+    arrangePayment(b2, periodKey(UI.y, UI.m));
+    save(); reflow(); toast("Arranged for tomorrow — change the date below", 3800);
+  };
   q("#loanConfirm").onclick = () => {
     const v = prompt("Balance the lender shows for " + (l.name || "this loan") + ":", String(l.balance || 0));
     if(v === null) return;
@@ -3639,21 +3719,21 @@ $("#sheetBody").addEventListener("toggle", e => {
 
 $("#sheetBody").addEventListener("change", e => {
   const row = e.target.closest(".payrow");
-  if(!row || UI.sheet !== "card") return;
+  if(!row || (UI.sheet !== "card" && UI.sheet !== "loan")) return;
   const rec = S.payments.find(x => x.id === row.dataset.pay);
   if(!rec) return;
   const f = e.target.dataset.pf;
   if(f === "amount") rec.amount = Math.max(0, parseFloat(e.target.value) || 0);
   else if(f === "date") rec.date = e.target.value || rec.date;
   rec.updatedAt = new Date().toISOString();
-  save(); renderCardSheet(); render();
+  save(); UI.sheet === "loan" ? openLoan(UI.loanId) : renderCardSheet(); render();
 });
 
 $("#sheetBody").addEventListener("click", e => {
   const dp = e.target.closest("[data-delpay]");
-  if(dp && UI.sheet === "card"){
+  if(dp && (UI.sheet === "card" || UI.sheet === "loan")){
     S.payments = S.payments.filter(x => x.id !== dp.dataset.delpay);
-    save(); renderCardSheet(); render(); return;
+    save(); UI.sheet === "loan" ? openLoan(UI.loanId) : renderCardSheet(); render(); return;
   }
   const oc = e.target.closest("[data-opencard]");
   if(oc){ openCard(oc.dataset.opencard); return; }
