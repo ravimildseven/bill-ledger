@@ -572,6 +572,35 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
   flex:none; width:52px; font-size:12px; color:var(--muted); line-height:1.25;
 }
 .hdate b{display:block; font-size:16px; font-weight:600; color:var(--ink)}
+.trend{padding:14px 16px 6px}
+.trend .eyebrow{display:block; margin-bottom:8px}
+.trendbars{display:flex; align-items:flex-end; gap:4px; height:52px}
+.trendbars i{flex:1; min-width:4px; background:var(--accent-soft); border-top:2px solid var(--accent);
+  border-radius:2px 2px 0 0; opacity:.6}
+.trendbars i:last-child{opacity:1}
+
+.actgroup{margin-bottom:18px}
+.acthead{display:flex; align-items:baseline; gap:10px; padding:14px 16px 8px}
+.acthead h3{margin:0; font-family:var(--f-display); font-size:17px; font-weight:600; letter-spacing:-.01em}
+.acthead .cnt{margin-left:auto; font-size:11px; color:var(--muted); font-family:var(--f-num)}
+.acttotals{padding:0 16px 10px; display:flex; flex-direction:column; gap:8px}
+.acttot{display:flex; gap:8px}
+.acttot > div{flex:1; border:1px solid var(--line); border-radius:10px; padding:8px 10px;
+  background:var(--surface-2); min-width:0}
+.acttot span{display:block; font-size:9.5px; font-weight:650; letter-spacing:.06em;
+  text-transform:uppercase; color:var(--muted); white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis}
+.acttot b{display:block; font-size:15px; font-weight:600; letter-spacing:-.015em; margin-top:2px}
+.acttot b.card{color:var(--accent)}
+.acttot b.in{color:var(--ok)}
+
+.hrow.act .a.oncard{color:var(--accent)}
+.ktag{font-style:normal; font-size:9px; font-weight:700; letter-spacing:.05em; text-transform:uppercase;
+  padding:1px 4px; border-radius:3px; margin-right:6px; border:1px solid var(--line); color:var(--muted)}
+.ktag.bill{border-color:var(--muted)}
+.ktag.card{border-color:var(--accent); color:var(--accent)}
+.ktag.cash{border-color:var(--ok); color:var(--ok)}
+
 .hrow .a{margin-left:auto; flex:none; font-size:14.5px; font-weight:600}
 .hrow .a.sk{color:var(--muted); font-weight:500}
 
@@ -1595,51 +1624,131 @@ function shortDate(isoStr){
 }
 
 /* ── render: history ────────────────────────────────────────────── */
-function historyHTML(){
-  const ps = S.payments
-    .filter(p => {
-      const b = billOf(p.billId); if(!b) return false;
-      if(UI.cur !== "all" && b.currency !== UI.cur) return false;
-      if(UI.src !== "all" && p.sourceId !== UI.src) return false;
-      return true;
-    })
-    .sort((a,b) => (b.date || "").localeCompare(a.date || "") || (b.period).localeCompare(a.period));
+/* ── activity: every movement, summed by week or month ──────────────
+   Three figures that must never be added together:
+     out of accounts — cash that actually left (bill payments + spends)
+     on cards        — swipes logged, which become cash out when paid
+     in              — money arriving
+   A card bill payment sits in the first and settles earlier swipes, so
+   summing the first two would count the same spending twice.          */
+function weekStartOf(isoStr){
+  const d = new Date(isoStr + "T00:00:00");
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));      // Monday
+  return iso(d);
+}
+function weekLabel(startISO){
+  const a = new Date(startISO + "T00:00:00");
+  const b = new Date(a); b.setDate(b.getDate() + 6);
+  const sameMonth = a.getMonth() === b.getMonth();
+  return MON3[a.getMonth()] + " " + a.getDate() + " – " +
+         (sameMonth ? "" : MON3[b.getMonth()] + " ") + b.getDate();
+}
 
-  let out = filtersHTML();
-  if(!ps.length){
-    return out + '<div class="empty"><b>No history yet</b>Tick a bill off in <b style="display:inline">This month</b> and every payment lands here — one entry per month, kept forever.</div>';
+/** Everything that moved money, newest first. */
+function movements(){
+  const out = [];
+  for(const p of S.payments){
+    if(p.status !== "paid" || isScheduled(p)) continue;
+    const b = billOf(p.billId); if(!b) continue;
+    out.push({kind:"bill", date:p.date, amount:p.amount || 0, currency:b.currency,
+              label:billDisplayName(b), sub:srcOf(p.sourceId).name,
+              dir:"out", cash:true, sourceId:p.sourceId});
   }
-  const byPeriod = new Map();
-  for(const p of ps){
-    if(!byPeriod.has(p.period)) byPeriod.set(p.period, []);
-    byPeriod.get(p.period).push(p);
-  }
-  for(const [pk, items] of byPeriod){
-    const [y,m] = pk.split("-").map(Number);
-    const tot = {};
-    for(const p of items){
-      if(p.status !== "paid") continue;
-      const b = billOf(p.billId);
-      tot[b.currency] = (tot[b.currency] || 0) + (p.amount || 0);
+  for(const s of S.spends){
+    if(s.cardId){
+      const c = cardOf(s.cardId); if(!c) continue;
+      out.push({kind:"card", date:s.date, amount:s.amount || 0, currency:c.currency,
+                label:s.note || "Card spend", sub:displayName(c),
+                dir:"out", cash:false, sourceId:c.sourceId});
+    }else if(s.accountId){
+      const a = acctOf(s.accountId); if(!a) continue;
+      const inbound = s.dir === "in";
+      out.push({kind:"cash", date:s.date, amount:s.amount || 0, currency:a.currency,
+                label:s.note || (inbound ? "Money in" : "Spend"),
+                sub:((a.bank ? a.bank + " · " : "") + a.name).trim(),
+                dir:inbound ? "in" : "out", cash:true, sourceId:""});
     }
-    const totStr = Object.entries(tot).map(([c,v]) => money(v,c)).join("  ·  ") || "nothing paid";
-    out += '<div class="hist-month"><h3>' + MONTHS[m-1] + ' ' + y +
-      '</h3><span class="tot num">' + totStr + '</span></div><div class="rows">';
-    for(const p of items){
-      const b = billOf(p.billId), s = srcOf(p.sourceId);
-      const [, , dd] = p.date.split("-");
-      out += '<button class="hrow" data-open="' + esc(b.id) + '" data-period="' + esc(p.period) + '">' +
-        '<span class="hdate"><b class="num">' + Number(dd) + '</b>' + MON3[m-1] + '</span>' +
-        '<span class="info"><span class="name">' + esc(billDisplayName(b)) + '</span>' +
-          '<span class="meta"><i class="dot" style="background:' + esc(s.color) + '"></i>' + esc(s.name) +
-          '<span class="sep">·</span>' + (p.status === "paid" ? "Paid" : "Skipped") +
-          (p.note ? '<span class="sep">·</span>' + esc(p.note) : '') + '</span></span>' +
-        '<span class="a num ' + (p.status === "paid" ? "" : "sk") + '">' +
-          (p.status === "paid" ? money(p.amount, b.currency) : "—") + '</span>' +
-      '</button>';
-    }
-    out += '</div>';
   }
+  return out.sort((a,b) => (b.date || "").localeCompare(a.date || ""));
+}
+
+function historyHTML(){
+  const grain = S.actGrain === "week" ? "week" : "month";
+  const all = movements()
+    .filter(m => UI.cur === "all" || m.currency === UI.cur)
+    .filter(m => UI.src === "all" || m.sourceId === UI.src);
+
+  let out = filtersHTML() +
+    '<div class="controls" style="padding-left:16px">' +
+      '<span class="eyebrow" style="margin-right:auto">' + all.length + ' entries</span>' +
+      '<div class="vtog">' +
+        '<button data-grain="week" aria-pressed="' + (grain === "week") + '">Weekly</button>' +
+        '<button data-grain="month" aria-pressed="' + (grain === "month") + '">Monthly</button>' +
+      '</div></div>';
+
+  if(!all.length){
+    return out + '<div class="empty"><b>Nothing recorded yet</b>' +
+      'Tick a bill off, or log a spend on a card or account, and it lands here with weekly and monthly totals.</div>';
+  }
+
+  const groups = new Map();
+  for(const m of all){
+    const key = grain === "week" ? weekStartOf(m.date) : (m.date || "").slice(0, 7);
+    if(!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(m);
+  }
+  const keys = [...groups.keys()].sort().reverse();
+
+  const totalsFor = list => {
+    const t = {};
+    for(const m of list){
+      const g = t[m.currency] || (t[m.currency] = {cashOut:0, cardOut:0, cashIn:0});
+      if(m.dir === "in") g.cashIn += m.amount;
+      else if(m.cash)    g.cashOut += m.amount;
+      else               g.cardOut += m.amount;
+    }
+    return t;
+  };
+
+  // trend across the periods on screen, tallest bar sets the scale
+  const trend = keys.slice(0, 12).reverse().map(k => {
+    const t = totalsFor(groups.get(k));
+    return {k, out:Object.values(t).reduce((n,g) => n + g.cashOut, 0)};
+  });
+  const peak = Math.max(1, ...trend.map(x => x.out));
+  if(trend.length >= 2){
+    out += '<div class="trend"><span class="eyebrow">Out of accounts, last ' + trend.length +
+      ' ' + (grain === "week" ? "weeks" : "months") + '</span><div class="trendbars">' +
+      trend.map(x => '<i style="height:' + Math.max(4, (x.out / peak) * 100) + '%" title="' +
+        esc(x.k) + '"></i>').join("") + '</div></div>';
+  }
+
+  for(const key of keys){
+    const list = groups.get(key);
+    const t = totalsFor(list);
+    const title = grain === "week" ? weekLabel(key)
+      : MONTHS[Number(key.slice(5, 7)) - 1] + " " + key.slice(0, 4);
+    out += '<div class="actgroup"><div class="acthead"><h3>' + esc(title) + '</h3>' +
+      '<span class="cnt">' + list.length + '</span></div>' +
+      '<div class="acttotals">' + Object.entries(t).map(([cur,g]) =>
+        '<div class="acttot">' +
+          '<div><span>Out of accounts</span><b class="num">' + money(g.cashOut, cur) + '</b></div>' +
+          (g.cardOut ? '<div><span>On cards</span><b class="num card">' + money(g.cardOut, cur) + '</b></div>' : '') +
+          (g.cashIn  ? '<div><span>In</span><b class="num in">' + money(g.cashIn, cur) + '</b></div>' : '') +
+        '</div>').join("") + '</div>' +
+      '<div class="rows">' + list.map(m => {
+        const [, mm, dd] = (m.date || "--").split("-");
+        return '<div class="hrow act">' +
+          '<span class="hdate"><b class="num">' + Number(dd || 0) + '</b>' + (MON3[Number(mm) - 1] || '') + '</span>' +
+          '<span class="info"><span class="name">' + esc(m.label) + '</span>' +
+            '<span class="meta"><i class="ktag ' + m.kind + '">' +
+              (m.kind === "bill" ? "bill" : m.kind === "card" ? "card" : "cash") + '</i>' +
+              esc(m.sub) + '</span></span>' +
+          '<span class="a num ' + (m.dir === "in" ? "in" : m.cash ? "" : "oncard") + '">' +
+            (m.dir === "in" ? "+" : "−") + money(m.amount, m.currency) + '</span></div>';
+      }).join("") + '</div></div>';
+  }
+  out += '<div class="hint" style="padding:4px 16px 18px">Out of accounts and on cards are kept apart on purpose: paying a card bill is money leaving an account to settle swipes already counted, so adding the two would count the same spending twice.</div>';
   return out;
 }
 
@@ -1901,7 +2010,8 @@ function render(){
   $("#main").innerHTML = UI.view === "cards" ? cardsHTML()
                        : UI.view === "ledger" ? ledgerHTML() : historyHTML();
   $("#addBtn").style.display = UI.view === "ledger" ? "flex" : "none";
-  $(".month-nav").style.display = UI.view === "cards" ? "none" : "flex";
+  // only the month ledger is scoped to a month; the others carry their own periods
+  $(".month-nav").style.display = UI.view === "ledger" ? "flex" : "none";
   $("#dataBtn").classList.toggle("unsaved", isDirty());
   $("#dataBtn").setAttribute("aria-label",
     isDirty() ? "Backup and data — unsaved changes" : "Backup and data");
@@ -3702,6 +3812,8 @@ $("#main").addEventListener("click", e => {
   }
   const mode = e.target.closest("[data-mode]");
   if(mode){ S.viewMode = mode.dataset.mode; save(); render(); return; }
+  const gr = e.target.closest("[data-grain]");
+  if(gr){ S.actGrain = gr.dataset.grain; save(); render(); return; }
   const cv = e.target.closest("[data-cardview]");
   if(cv){ S.cardView = cv.dataset.cardview; save(); render(); return; }
   const tick = e.target.closest("[data-tick]");
