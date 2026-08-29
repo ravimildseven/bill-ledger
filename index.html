@@ -350,6 +350,9 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .payrow{display:flex; align-items:center; gap:8px}
 .payn{flex:none; width:18px; font-size:11px; color:var(--muted); text-align:center}
 .payfields{flex:1; min-width:0; display:grid; grid-template-columns:1.15fr .85fr .9fr; gap:6px}
+.payfields.three{grid-template-columns:1.05fr .8fr .9fr}
+.schednote.calm{color:var(--muted); font-weight:500}
+.schednote.warn{color:var(--warn); font-weight:600}
 .payfields input,.payfields select{
   width:100%; min-width:0; padding:9px 8px; border-radius:9px; background:var(--surface);
   border:1px solid var(--line); font-size:13.5px; -webkit-appearance:none; appearance:none;
@@ -583,7 +586,10 @@ button{background:none; border:0; cursor:pointer; -webkit-tap-highlight-color:tr
 .acthead{display:flex; align-items:baseline; gap:10px; padding:14px 16px 8px}
 .acthead h3{margin:0; font-family:var(--f-display); font-size:17px; font-weight:600; letter-spacing:-.01em}
 .acthead .cnt{margin-left:auto; font-size:11px; color:var(--muted); font-family:var(--f-num)}
-.acttotals{padding:0 16px 10px; display:flex; flex-direction:column; gap:8px}
+.acttotals{padding:0 16px 10px; display:flex; flex-direction:column; gap:10px}
+.acttotwrap{display:flex; flex-direction:column; gap:5px}
+.curtag{font-size:10px; font-weight:650; letter-spacing:.07em; text-transform:uppercase;
+  color:var(--muted)}
 .acttot{display:flex; gap:8px}
 .acttot > div{flex:1; border:1px solid var(--line); border-radius:10px; padding:8px 10px;
   background:var(--surface-2); min-width:0}
@@ -1672,6 +1678,50 @@ function movements(){
   return out.sort((a,b) => (b.date || "").localeCompare(a.date || ""));
 }
 
+/** Spending as CSV, so it opens in Numbers or a spreadsheet. One row per
+ *  movement, with the period keys already worked out for pivoting. */
+function activityCSV(){
+  const q = v => {
+    const t = String(v == null ? "" : v);
+    return /[",\n]/.test(t) ? '"' + t.replace(/"/g, '""') + '"' : t;
+  };
+  const rows = [["date","week_starting","month","type","direction","description",
+                 "card_or_account","paid_from","account_debited","currency","amount"]];
+  for(const m of movements()){
+    const acct = m.kind === "bill" ? accountForSource(m.sourceId) : null;
+    rows.push([
+      m.date, weekStartOf(m.date), (m.date || "").slice(0,7),
+      m.kind === "bill" ? "bill payment" : m.kind === "card" ? "card spend" : "cash",
+      m.dir === "in" ? "in" : "out",
+      m.label, m.sub,
+      m.kind === "bill" ? srcOf(m.sourceId).name : "",
+      acct ? ((acct.bank ? acct.bank + " " : "") + acct.name).trim() : "",
+      m.currency,
+      (m.amount || 0).toFixed(2)
+    ]);
+  }
+  return rows.map(r => r.map(q).join(",")).join("\r\n") + "\r\n";
+}
+async function doExportCSV(){
+  const text = activityCSV();
+  const name = "spending-" + todayISO + ".csv";
+  try{
+    const file = new File([text], name, {type:"text/csv"});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:"Spending"});
+      return toast("Shared — choose where to save it", 3200);
+    }
+  }catch(err){ if(err && err.name === "AbortError") return; }
+  try{
+    const url = URL.createObjectURL(new Blob([text], {type:"text/csv"}));
+    const a = document.createElement("a");
+    a.href = url; a.download = name; a.rel = "noopener";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
+    toast("Downloaded " + name, 3200);
+  }catch(e){ toast("Could not create the file here"); }
+}
+
 function historyHTML(){
   const grain = S.actGrain === "week" ? "week" : "month";
   const all = movements()
@@ -1717,7 +1767,7 @@ function historyHTML(){
   });
   const peak = Math.max(1, ...trend.map(x => x.out));
   if(trend.length >= 2){
-    out += '<div class="trend"><span class="eyebrow">Out of accounts, last ' + trend.length +
+    out += '<div class="trend"><span class="eyebrow">Money out, last ' + trend.length +
       ' ' + (grain === "week" ? "weeks" : "months") + '</span><div class="trendbars">' +
       trend.map(x => '<i style="height:' + Math.max(4, (x.out / peak) * 100) + '%" title="' +
         esc(x.k) + '"></i>').join("") + '</div></div>';
@@ -1731,10 +1781,14 @@ function historyHTML(){
     out += '<div class="actgroup"><div class="acthead"><h3>' + esc(title) + '</h3>' +
       '<span class="cnt">' + list.length + '</span></div>' +
       '<div class="acttotals">' + Object.entries(t).map(([cur,g]) =>
-        '<div class="acttot">' +
-          '<div><span>Out of accounts</span><b class="num">' + money(g.cashOut, cur) + '</b></div>' +
-          (g.cardOut ? '<div><span>On cards</span><b class="num card">' + money(g.cardOut, cur) + '</b></div>' : '') +
-          (g.cashIn  ? '<div><span>In</span><b class="num in">' + money(g.cashIn, cur) + '</b></div>' : '') +
+        '<div class="acttotwrap">' +
+          (Object.keys(t).length > 1
+            ? '<span class="curtag">' + (cur === "INR" ? "India ₹" : "US $") + '</span>' : '') +
+          '<div class="acttot">' +
+            '<div><span>Money out</span><b class="num">' + money(g.cashOut, cur) + '</b></div>' +
+            (g.cardOut ? '<div><span>Card spend</span><b class="num card">' + money(g.cardOut, cur) + '</b></div>' : '') +
+            (g.cashIn  ? '<div><span>Money in</span><b class="num in">' + money(g.cashIn, cur) + '</b></div>' : '') +
+          '</div>' +
         '</div>').join("") + '</div>' +
       '<div class="rows">' + list.map(m => {
         const [, mm, dd] = (m.date || "--").split("-");
@@ -1748,7 +1802,12 @@ function historyHTML(){
             (m.dir === "in" ? "+" : "−") + money(m.amount, m.currency) + '</span></div>';
       }).join("") + '</div></div>';
   }
-  out += '<div class="hint" style="padding:4px 16px 18px">Out of accounts and on cards are kept apart on purpose: paying a card bill is money leaving an account to settle swipes already counted, so adding the two would count the same spending twice.</div>';
+  out += '<div class="cardacts"><button class="ghost" data-act="csv">Export spending as a spreadsheet</button>' +
+    '<button class="ghost" data-act="copyai">Copy a snapshot for an AI</button></div>';
+  out += '<div class="hint" style="padding:4px 16px 18px">' +
+    '<b>Money out</b> is cash that left your accounts — bills paid and money spent from an account.<br>' +
+    '<b>Card spend</b> is what you put on a card. It is not cash yet; it becomes Money out when you pay that card’s bill.<br>' +
+    'They are shown apart because adding them would count the same spending twice.</div>';
   return out;
 }
 
@@ -2663,6 +2722,28 @@ function loanState(l){
    read from the bank, then everything recorded since.                 */
 const acctOf = id => S.accounts.find(a => a.id === id);
 
+/** Which account a payment source draws on. An explicit link wins; failing
+ *  that a name match, so a source called SoFi finds "SoFi Checking" without
+ *  anyone having to wire it up first. That indirection being unset silently
+ *  is why payments were not reducing any balance. */
+function accountForSource(sourceId){
+  if(!sourceId) return null;
+  const explicit = S.accounts.find(a => S.sources.some(x => x.id === sourceId && x.accountId === a.id));
+  if(explicit) return explicit;
+  const src = S.sources.find(x => x.id === sourceId);
+  if(!src || !src.name) return null;
+  const want = src.name.trim().toLowerCase();
+  return S.accounts.find(a =>
+    (a.bank || "").trim().toLowerCase() === want ||
+    (a.name || "").trim().toLowerCase() === want ||
+    ((a.bank || "") + " " + (a.name || "")).trim().toLowerCase().includes(want)) || null;
+}
+/** True when the link is inferred rather than set, so the UI can say so. */
+function sourceLinkIsGuess(sourceId){
+  const src = S.sources.find(x => x.id === sourceId);
+  return !!(src && !src.accountId && accountForSource(sourceId));
+}
+
 function accountState(a){
   const t = new Date(); t.setHours(0,0,0,0);
   const conf = a.confirmedAt ? new Date(a.confirmedAt + "T00:00:00") : null;
@@ -2673,7 +2754,10 @@ function accountState(a){
   const inn = moves.filter(m => m.dir === "in").reduce((n,m) => n + (m.amount || 0), 0);
 
   // bills paid from a source that draws on this account
-  const srcIds = S.sources.filter(s => s.accountId === a.id).map(s => s.id);
+  const srcIds = S.sources.filter(s => {
+    const acct = accountForSource(s.id);
+    return acct && acct.id === a.id;
+  }).map(s => s.id);
   const paidOut = srcIds.length
     ? S.payments.filter(p => p.status === "paid" && srcIds.includes(p.sourceId) &&
                              !isScheduled(p) && afterConfirm(a, p))
@@ -3204,17 +3288,34 @@ function cardPayRows(cm){
   return '<div class="paylist" style="margin-top:10px">' + pays.map((x,i) =>
     '<div class="payrow" data-pay="' + esc(x.id) + '">' +
       '<span class="payn num">' + (isScheduled(x) ? '&rarr;' : (i+1)) + '</span>' +
-      '<div class="payfields">' +
+      '<div class="payfields three">' +
         '<input type="date" data-pf="date" value="' + esc(x.date) + '" aria-label="Date of payment ' + (i+1) + '">' +
         '<input type="number" inputmode="decimal" step="0.01" data-pf="amount" value="' +
           (x.amount || 0) + '" aria-label="Amount of payment ' + (i+1) + '">' +
+        '<select data-pf="sourceId" aria-label="Paid from, payment ' + (i+1) + '">' +
+          S.sources.map(sr => '<option value="' + esc(sr.id) + '"' +
+            (sr.id === x.sourceId ? " selected" : "") + '>' + esc(sr.name) + '</option>').join("") +
+        '</select>' +
       '</div>' +
       '<button class="paydel" data-delpay="' + esc(x.id) + '" aria-label="Remove payment ' + (i+1) + '">' +
         '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button>' +
     '</div>' +
-    (isScheduled(x) ? '<div class="schednote">Arranged for ' + shortDate(x.date) +
-      ' &middot; ' + money(x.amount || 0, cur) + ' not deducted yet</div>' : '')
+    payFromNote(x, cur)
   ).join("") + '</div>';
+}
+
+/** Says plainly which account a payment leaves, and flags when nothing
+ *  will be deducted because no account matches the source. */
+function payFromNote(x, cur){
+  if(isScheduled(x))
+    return '<div class="schednote">Arranged for ' + shortDate(x.date) +
+           ' &middot; ' + money(x.amount || 0, cur) + ' not deducted yet</div>';
+  const acct = accountForSource(x.sourceId);
+  if(!acct)
+    return '<div class="schednote warn">Not linked to an account &mdash; this will not reduce any balance</div>';
+  return '<div class="schednote calm">Comes out of ' +
+    esc(((acct.bank ? acct.bank + " · " : "") + acct.name).trim()) +
+    (sourceLinkIsGuess(x.sourceId) ? ' (matched by name)' : '') + '</div>';
 }
 
 /** Timeline of hand-logged movements, newest first, each removable. */
@@ -3805,6 +3906,7 @@ $("#main").addEventListener("click", e => {
     }
     if(a === "refreshall") openRefreshAll();
     if(a === "copyai") doCopyForAI();
+    if(a === "csv") doExportCSV();
     if(a === "addacct") openAccount(null);
     if(a === "addloan") openLoan(null);
     if(a === "fixstale") openRefreshAll();
@@ -3868,6 +3970,7 @@ $("#sheetBody").addEventListener("change", e => {
   const f = e.target.dataset.pf;
   if(f === "amount") rec.amount = Math.max(0, parseFloat(e.target.value) || 0);
   else if(f === "date") rec.date = e.target.value || rec.date;
+  else if(f === "sourceId") rec.sourceId = e.target.value;
   rec.updatedAt = new Date().toISOString();
   save(); UI.sheet === "loan" ? openLoan(UI.loanId) : renderCardSheet(); render();
 });
