@@ -969,6 +969,23 @@ body{font-size:15px; letter-spacing:-.003em}
 .qa .seg{margin-bottom:-4px}
 .qa-go{margin-top:4px}
 
+/* planned payments waiting for a yes */
+.pendcard{margin:4px 16px 10px; padding:14px 14px 12px; border-radius:var(--r-lg); background:var(--warn-soft)}
+.pendhead b{display:block; font-size:15px; color:var(--warn)}
+.pendhead span{display:block; font-size:12px; color:var(--ink-2); margin:2px 0 6px}
+.pendrow{display:flex; align-items:center; gap:10px; padding:9px 0; border-top:1px solid color-mix(in srgb, var(--warn) 22%, transparent)}
+.pendinfo{flex:1; min-width:0; text-align:left}
+.pendinfo b{display:block; font-size:14.5px; font-weight:620; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.pendinfo span{display:block; font-size:12px; color:var(--ink-2)}
+.pendamt{font-weight:650; font-size:14.5px}
+.pendyes{flex:none; padding:8px 14px; min-height:38px; border-radius:99px; background:var(--warn); color:var(--surface);
+  font-size:13px; font-weight:700}
+.stat.pending{color:var(--warn); font-weight:650}
+.group[data-gstate="pending"] .eyebrow em{background:var(--warn-soft); color:var(--warn)}
+.row[data-state="pending"] .tick span{border-color:var(--warn); border-style:dashed; border-width:2px}
+.tile[data-state="pending"]::before{background:var(--warn)}
+.schednote .linkbtn{font-size:inherit; margin-left:4px}
+
 /* entries waiting for a card */
 .stuck{margin:0 0 12px; padding:12px; border-radius:14px; background:var(--warn-soft)}
 .stuck .qa-lbl{color:var(--warn)}
@@ -1223,7 +1240,26 @@ function payFor(billId, pk){ return paysFor(billId, pk)[0]; }
 /** A payment dated ahead of today is arranged but has not left the account
  *  yet, so it must not reduce any balance — it just stops the bill reading
  *  as overdue. Once the date arrives it counts on its own. */
-const isScheduled = p => (p.date || "") > todayISO;
+/* An arranged payment carries `planned` until you say it went through.
+ * It used to count as paid the moment its date passed, so a payment you
+ * never checked on read as done. Now, once the date arrives, it is pending:
+ * not deducted from anything, and flagged for a one-tap confirmation. */
+const isScheduled = p => !!p.planned || (p.date || "") > todayISO;
+const isPending   = p => !!p.planned && p.status === "paid" && (p.date || "") <= todayISO;
+function confirmPayment(p){
+  p.planned = false;
+  if((p.date || "") > todayISO) p.date = todayISO;   // confirmed early: it went today
+  p.updatedAt = new Date().toISOString();
+}
+const pendingPayments = () => S.payments
+  .filter(p => isPending(p) && billOf(p.billId) && !billOf(p.billId).archived)
+  .sort((a,b) => (a.date || "").localeCompare(b.date || ""));
+// records from before `planned` existed: anything dated ahead was arranged
+for(const p of S.payments)
+{
+  if(p.planned === undefined && p.status === "paid" && (p.date || "") > todayISO) p.planned = p.arranged = true;
+  if(p.planned && p.arranged === undefined) p.arranged = true;
+}
 
 function progressOf(b, pk){
   const pays = paysFor(b.id, pk);
@@ -1232,7 +1268,8 @@ function progressOf(b, pk){
     return {skipped:true, paid:0, scheduled:0, target:b.amount || 0, left:0, n:pays.length};
 
   const settled = pays.filter(p => !isScheduled(p));
-  const ahead   = pays.filter(isScheduled);
+  const pending = pays.filter(isPending);
+  const ahead   = pays.filter(p => isScheduled(p) && !isPending(p));
   const paid      = settled.reduce((t,p) => t + (p.amount || 0), 0);
   const scheduled = ahead.reduce((t,p) => t + (p.amount || 0), 0);
   const target = b.amount || 0;
@@ -1241,6 +1278,8 @@ function progressOf(b, pk){
   const covered = !done && target > 0 && paid + scheduled >= target - 0.005;
   return {
     paid, scheduled, target, n:pays.length, nAhead:ahead.length, closed, done, covered,
+    pendingN: pending.length, pendingAmt: pending.reduce((t,p) => t + (p.amount || 0), 0),
+    pendingDate: pending.length ? pending[0].date : null,
     nextDate: ahead.length ? ahead.map(p => p.date).sort()[0] : null,
     left: done ? 0 : Math.max(0, target - paid),
     partial: !done && paid > 0
@@ -1259,6 +1298,7 @@ function stateOf(b, y, m){
   const g = progressOf(b, pk);
   if(g.skipped) return "skipped";
   if(g.done)    return "paid";
+  if(g.pendingN) return "pending";     // its date came; you haven't confirmed it
   if(g.covered) return "scheduled";    // arranged ahead — not overdue
   if(g.partial) return "partial";      // part-paid still counts as outstanding
   if(g.scheduled > 0) return "scheduled";
@@ -1321,6 +1361,9 @@ const daysBetween = (a, b) => Math.floor((b - a) / 86400000);
  *  written before confirmedTs existed. */
 function afterConfirm(holder, p){
   if(!holder.confirmedAt) return true;
+  // an arranged payment is logged long before it leaves; what matters is
+  // whether it went out after the balance was read, i.e. its own date
+  if(p.arranged && p.date) return p.date > holder.confirmedAt;
   if(holder.confirmedTs && p.loggedAt){
     const t = Date.parse(p.loggedAt);
     if(Number.isFinite(t)) return t > holder.confirmedTs;
@@ -1541,6 +1584,8 @@ function sanitize(d){
       sourceId: srcIds.has(sId(p.sourceId)) ? sId(p.sourceId) : fallbackSrc,
       note:     sStr(p.note, 120),
       final:    p.final !== false,        // absent => closes the month (old data)
+      planned:  p.status !== "skipped" && (p.planned != null ? !!p.planned : sDate(p.date) > todayISO),
+      arranged: p.status !== "skipped" && (!!p.arranged || !!p.planned || (p.planned == null && sDate(p.date) > todayISO)),
       loggedAt: sStr(p.loggedAt, 40),
       updatedAt:sStr(p.updatedAt, 40)
     }));
@@ -1660,6 +1705,7 @@ function summaryHTML(list){
     g.n++;
     if(pr.skipped){ g.skip++; continue; }
     if(pr.done){ g.paid++; g.total += pr.paid; continue; }
+    if(pr.pendingN) g.pend = (g.pend || 0) + 1;      // still counts as owed until confirmed
     if(pr.covered){ g.sched++; g.total += pr.paid + pr.scheduled; continue; }
     // outstanding: only what is still owed counts toward "still to pay"
     if(pr.partial) g.part++;
@@ -1687,7 +1733,8 @@ function summaryHTML(list){
       '<div class="tot-sub">' + (open
         ? open + ' left &middot; ' + g.paid + ' of ' + g.n + ' cleared' +
           (g.part ? ' &middot; ' + g.part + ' part-paid' : '') +
-          (g.sched ? ' &middot; ' + g.sched + ' arranged' : '')
+          (g.sched ? ' &middot; ' + g.sched + ' arranged' : '') +
+          (g.pend ? ' &middot; ' + g.pend + ' to confirm' : '')
         : 'all ' + g.n + ' settled') + '</div>' +
     '</div>';
   }).join("");
@@ -1777,6 +1824,8 @@ function tilesHTML(list){
     if(st === "scheduled"){ amt = g.scheduled;
       stat = '<span class="tile-stat" style="color:var(--accent)">Paying ' + shortDate(g.nextDate) + '</span>'; }
     if(st === "skipped") stat = '<span class="tile-stat" style="color:var(--muted)">Skipped</span>';
+    if(st === "pending"){ amt = g.pendingAmt;
+      stat = '<span class="tile-stat" style="color:var(--warn)">Planned ' + shortDate(g.pendingDate) + ' · confirm</span>'; }
     if(st === "missed")  stat = '<span class="tile-stat" style="color:var(--bad)">Overdue ' + MON3[UI.m] + ' ' + day + '</span>';
     if(st === "today")   stat = '<span class="tile-stat" style="color:var(--warn)">Due today</span>';
     if(st === "soon")    stat = '<span class="tile-stat" style="color:var(--warn)">Due ' + MON3[UI.m] + ' ' + day + '</span>';
@@ -1804,7 +1853,7 @@ function ledgerHTML(){
       '</div></div>';
   }
   const list = billsFor(UI.y, UI.m);
-  let out = summaryHTML(list) + filtersHTML();
+  let out = pendingHTML() + summaryHTML(list) + filtersHTML();
   if(!list.length){
     return out + '<div class="empty"><b>Nothing due</b>No bills fall in ' +
       MONTHS[UI.m] + ' ' + UI.y + ' with these filters.</div>' + ADD_BILL_BTN;
@@ -1835,10 +1884,13 @@ function ledgerHTML(){
     // The whole group shares one due date, so its state belongs on the header
     // once rather than repeated down every row.
     // a group is only overdue if something in it is actually unpaid
-    const gs = items.every(x => stateOf(x, UI.y, UI.m) === "scheduled")
-      ? "scheduled" : stateOf(items[0], UI.y, UI.m);
+    const states = items.map(x => stateOf(x, UI.y, UI.m));
+    const gs = states.every(x => x === "scheduled") ? "scheduled"
+             : states.every(x => x === "pending" || x === "scheduled") ? "pending"
+             : states.find(x => x !== "pending" && x !== "scheduled") || states[0];
     const label = gs === "missed" ? "overdue" : gs === "today" ? "due today"
-                : gs === "soon"  ? "due soon" : gs === "scheduled" ? "arranged" : "";
+                : gs === "soon"  ? "due soon" : gs === "scheduled" ? "arranged"
+                : gs === "pending" ? "confirm" : "";
     out += '<section class="group" data-gstate="' + gs + '"><div class="group-head">' +
       '<span class="eyebrow">' + MON3[UI.m] + ' ' + day +
         (label ? '<em>' + label + '</em>' : '') + '</span>' +
@@ -1854,6 +1906,24 @@ function ledgerHTML(){
 const ADD_BILL_BTN = '<button class="addbill" data-act="add">' +
   '<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>New bill</button>';
 
+/** Arranged payments whose date has come, from any month: did they go out? */
+function pendingHTML(){
+  const list = pendingPayments();
+  if(!list.length) return "";
+  return '<div class="pendcard"><div class="pendhead"><b>Did ' + (list.length === 1 ? 'this' : 'these') +
+      ' go through?</b><span>Planned payments only count once you confirm them.</span></div>' +
+    list.map(p => {
+      const b = billOf(p.billId);
+      return '<div class="pendrow">' +
+        '<button class="pendinfo" data-open="' + esc(b.id) + '" data-period="' + esc(p.period) + '">' +
+          '<b>' + esc(billDisplayName(b)) + '</b>' +
+          '<span>Planned ' + shortDate(p.date) + ' &middot; ' + esc(srcOf(p.sourceId).name) + '</span></button>' +
+        '<span class="num pendamt">' + money(p.amount || 0, b.currency) + '</span>' +
+        '<button class="pendyes" data-confirmpay="' + esc(p.id) + '">Paid</button>' +
+      '</div>';
+    }).join("") +
+    '<div class="hint" style="margin-top:8px">Not paid yet? Tap the bill to move its date.</div></div>';
+}
 function allClearHTML(n){
   return '<div class="allclear">' + I.check +
     '<b>Everything is settled for ' + MONTHS[UI.m] + '</b>' +
@@ -1885,6 +1955,10 @@ function rowHTML(b, pk){
   if(st === "scheduled"){
     amt = g.scheduled;
     stat = '<span class="stat scheduled">Paying ' + shortDate(g.nextDate) + '</span>';
+  }
+  if(st === "pending"){
+    amt = g.pendingAmt;
+    stat = '<span class="stat pending">Planned ' + shortDate(g.pendingDate) + ' · confirm</span>';
   }
   if(st === "partial"){
     amt = g.left;
@@ -2213,7 +2287,9 @@ function cardsHTML(){
       const dts = cardDates(c);
       const cmm = cardMonth(c);
       const paidThis = cmm && (cmm.state === "paid" || cmm.state === "skipped");
-      const duetag = cmm && cmm.state === "scheduled"
+      const duetag = cmm && cmm.state === "pending"
+          ? '<i class="duetag soon">confirm payment</i>'
+        : cmm && cmm.state === "scheduled"
           ? '<i class="duetag sched">paying ' + shortDate(cmm.progress.nextDate) + '</i>'
         : paidThis ? '<i class="duetag ok">paid</i>'
         : dts.dueIn == null ? ''
@@ -2403,9 +2479,10 @@ function clearPeriod(billId, pk){
 function addPayment(billId, pk, {amount, date, sourceId, note, final} = {}){
   const b = billOf(billId);
   const stamp = new Date().toISOString();
+  const when = date || defaultDate(b, pk);
   const p = {
     id:uid(), billId, period:pk, status:"paid",
-    date: date || defaultDate(b, pk),
+    date: when, planned: when > todayISO, arranged: when > todayISO,
     amount: amount == null ? (b.amount || 0) : amount,
     sourceId: sourceId || b.sourceId, note: note || "",
     final: final !== false,
@@ -2963,6 +3040,15 @@ function renderSheet(){
                 : 'Nothing recorded yet' + (gp.target ? ' · ' + money(gp.target, b.currency) + ' expected' : '')) +
             '</div></div>') +
 
+      (paysThis.some(isPending)
+        ? '<div class="gapnote warn" style="margin-bottom:11px"><b>Did it go through?</b><span>' +
+            paysThis.filter(isPending).map(x => money(x.amount || 0, b.currency) + ' planned for ' + shortDate(x.date)).join(', ') +
+            ' — it isn’t counted as paid until you confirm. If it hasn’t gone yet, change its date below.</span>' +
+            paysThis.filter(isPending).map(x =>
+              '<button class="primary" style="margin-top:9px" data-confirmpay="' + esc(x.id) + '">Yes, ' +
+              money(x.amount || 0, b.currency) + ' was paid</button>').join("") +
+          '</div>'
+        : '') +
       // every payment this month, each editable and removable
       (paysThis.length
         ? '<div class="paylist">' + paysThis.map((x, i) =>
@@ -3061,7 +3147,7 @@ function wireSheet(b, pk){
       inp.onchange = e => {
         const f = inp.dataset.pf;
         if(f === "amount") rec.amount = Math.max(0, parseFloat(e.target.value) || 0);
-        else if(f === "date") rec.date = e.target.value || rec.date;
+        else if(f === "date"){ rec.date = e.target.value || rec.date; if(rec.date > todayISO) rec.planned = rec.arranged = true; }
         else rec[f] = e.target.value;
         rec.updatedAt = new Date().toISOString();
         save();
@@ -3574,7 +3660,8 @@ function renderCardSheet(){
             '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
             '<span class="a num" style="color:' +
               (cm.state === "paid" ? 'var(--ok)' : (cm.state === "partial" || cm.state === "scheduled") ? 'var(--accent)' : 'var(--muted)') + '">' +
-              (cm.state === "paid" ? 'paid ' + money(cm.progress.paid, c.currency)
+              (cm.state === "pending" ? money(cm.progress.pendingAmt, c.currency) + ' planned · confirm below'
+               : cm.state === "paid" ? 'paid ' + money(cm.progress.paid, c.currency)
                : cm.state === "scheduled" ? money(cm.progress.scheduled, c.currency) + ' set for ' + shortDate(cm.progress.nextDate)
                : cm.state === "partial" ? money(cm.progress.paid, c.currency) + ' of ' + money(cm.progress.target, c.currency)
                : cm.state === "skipped" ? 'nothing owed'
@@ -3741,6 +3828,9 @@ function cardPayRows(cm){
 /** Says plainly which account a payment leaves, and flags when nothing
  *  will be deducted because no account matches the source. */
 function payFromNote(x, cur){
+  if(isPending(x))
+    return '<div class="schednote warn">Planned for ' + shortDate(x.date) + ' — did it go through? ' +
+           '<button class="linkbtn" data-confirmpay="' + esc(x.id) + '">Yes, paid</button></div>';
   if(isScheduled(x))
     return '<div class="schednote">Arranged for ' + shortDate(x.date) +
            ' &middot; ' + money(x.amount || 0, cur) + ' not deducted yet</div>';
@@ -3827,7 +3917,8 @@ function openLoan(loanId){
             '<div class="mini-row"><span>' + MONTHS[UI.m] + ' payment</span>' +
             '<span class="a num" style="color:' +
               (lm.state === "paid" ? 'var(--ok)' : (lm.state === "partial" || lm.state === "scheduled") ? 'var(--accent)' : 'var(--muted)') + '">' +
-              (lm.state === "paid" ? 'paid ' + money(lm.progress.paid, l.currency)
+              (lm.state === "pending" ? money(lm.progress.pendingAmt, l.currency) + ' planned · confirm below'
+               : lm.state === "paid" ? 'paid ' + money(lm.progress.paid, l.currency)
                : lm.state === "scheduled" ? money(lm.progress.scheduled, l.currency) + ' set for ' + shortDate(lm.progress.nextDate)
                : lm.state === "partial" ? money(lm.progress.paid, l.currency) + ' of ' + money(lm.progress.target, l.currency)
                : lm.state === "skipped" ? 'nothing owed'
@@ -4939,6 +5030,11 @@ $("#main").addEventListener("click", e => {
   const tick = e.target.closest("[data-tick]");
   if(tick){
     const id = tick.dataset.tick, pk = periodKey(UI.y, UI.m);
+    if(stateOf(billOf(id), UI.y, UI.m) === "pending"){
+      paysFor(id, pk).filter(isPending).forEach(confirmPayment);
+      save(); render(); toast("Confirmed as paid");
+      return;
+    }
     // settled -> clear the month; anything else (including part-paid) -> settle
     setStatus(id, pk, stateOf(billOf(id), UI.y, UI.m) === "paid" ? null : "paid");
     render();
@@ -4990,7 +5086,7 @@ $("#sheetBody").addEventListener("change", e => {
   if(!rec) return;
   const f = e.target.dataset.pf;
   if(f === "amount") rec.amount = Math.max(0, parseFloat(e.target.value) || 0);
-  else if(f === "date") rec.date = e.target.value || rec.date;
+  else if(f === "date"){ rec.date = e.target.value || rec.date; if(rec.date > todayISO) rec.planned = rec.arranged = true; }
   else if(f === "sourceId") rec.sourceId = e.target.value;
   rec.updatedAt = new Date().toISOString();
   save(); UI.sheet === "loan" ? openLoan(UI.loanId) : renderCardSheet(); render();
@@ -5012,6 +5108,23 @@ $("#sheetBody").addEventListener("click", e => {
   else if(UI.sheet === "account") openAccount(UI.acctId);
   render();
 });
+document.addEventListener("click", e => {
+  const btn = e.target.closest("[data-confirmpay]");
+  if(!btn) return;
+  e.preventDefault(); e.stopPropagation();
+  const p = S.payments.find(x => x.id === btn.dataset.confirmpay);
+  if(!p) return;
+  confirmPayment(p);
+  save();
+  if($("#sheet").classList.contains("on")){
+    if(UI.sheet === "bill") renderSheet();
+    else if(UI.sheet === "card") renderCardSheet();
+    else if(UI.sheet === "loan") openLoan(UI.loanId);
+  }
+  render();
+  const b = billOf(p.billId);
+  toast((b ? billDisplayName(b) + " · " : "") + money(p.amount || 0, b ? b.currency : "USD") + " confirmed paid");
+}, true);
 $("#sheetDone").onclick = () => UI.sheet === "quick" ? quickSave()
                               : UI.sheet === "balance" ? balanceSave() : closeSheet();
 $("#scrim").onclick = closeSheet;
