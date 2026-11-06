@@ -71,6 +71,31 @@ The token lives inside the shortcut on your phone. `tools/build_shortcut.py`
 regenerates the shortcut (then sign it with
 `shortcuts sign --mode anyone --input unsigned.shortcut --output "Log Spend.shortcut"`).
 
+## Log Apple Pay taps automatically
+
+`Log Apple Pay.shortcut` runs from a Wallet **Transaction** automation, so every
+Apple Pay tap is logged with its card, amount and merchant — no typing. Setup is
+under **More → Log Apple Pay taps automatically**: add the shortcut (paste the
+token from **Copy my sync token**), then in Shortcuts create an Automation →
+Transaction → your cards → Run Immediately → Run Shortcut *Log Apple Pay* with
+*Shortcut Input* as its input.
+
+Taps land in the same `inbox/` as the Back Tap shortcut. A merchant you've used
+before gets its category automatically. If Wallet calls a card something the
+ledger doesn't recognise ("Gold Card"), the tap waits under **More → Waiting for
+a card**; pick the card once and that name is remembered (`cardAlias` in the
+ledger file). Zero-amount taps such as transit are discarded.
+
+## Updating a balance shows what was missed
+
+**Update balance** (on a card or account) and **Update all balances** show what
+the app expected next to what you type. A higher card balance than expected —
+or a lower account balance — is spending you didn't log; tick-on by default, it
+is filed as an *unlogged* spend (already settled, since the new reading includes
+it), optionally with a category. Activity tags those entries, and each card shows
+how much went unlogged over the last 90 days — a measure of how far the app
+drifts. In **Update all balances**, a card left blank keeps its current reading.
+
 ## Reminders
 
 The data panel can add every bill to your calendar as a repeating event with an
@@ -145,5 +170,6 @@ Then open <http://localhost:8791>.
 | `manifest.webmanifest` | Add-to-Home-Screen metadata |
 | `icon.svg`, `icon.png` | App icon |
 | `Log Spend.shortcut` | Signed iPhone Shortcut for Back Tap logging |
-| `tools/build_shortcut.py` | Regenerates that shortcut |
+| `Log Apple Pay.shortcut` | Signed Shortcut for the Wallet transaction automation |
+| `tools/build_shortcut.py` | Regenerates either shortcut (`applepay` as 2nd argument) |
 | `.nojekyll` | Serve files as-is, skipping Jekyll |

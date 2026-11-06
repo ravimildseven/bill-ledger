@@ -969,6 +969,34 @@ body{font-size:15px; letter-spacing:-.003em}
 .qa .seg{margin-bottom:-4px}
 .qa-go{margin-top:4px}
 
+/* entries waiting for a card */
+.stuck{margin:0 0 12px; padding:12px; border-radius:14px; background:var(--warn-soft)}
+.stuck .qa-lbl{color:var(--warn)}
+.stuckrow{display:flex; flex-direction:column; gap:8px; padding:8px 0; border-top:1px solid color-mix(in srgb, var(--warn) 25%, transparent)}
+.stuckrow:first-of-type{border-top:0}
+.stuckrow b{display:block; font-size:14px}
+.stuckrow span{font-size:12px; color:var(--ink-2)}
+.stuckrow select{width:100%; min-height:44px; border:0; border-radius:12px; padding:0 12px; background:var(--surface); font-size:15px}
+
+/* balance update */
+.rfgap{font-size:12px; font-weight:600; color:var(--accent); min-height:0}
+.rfgap:empty{display:none}
+.rfgap.warn{color:var(--warn)}
+.rfgap.ok{color:var(--ok)}
+.balexp{display:flex; flex-direction:column; align-items:center; gap:2px; padding:14px; border-radius:16px;
+  background:var(--surface-2); text-align:center}
+.balexp span{font-size:12px; font-weight:650; color:var(--muted)}
+.balexp b{font-family:var(--f-num); font-size:24px; font-weight:700}
+.balexp i{font-style:normal; font-size:11.5px; color:var(--muted)}
+.gapnote{display:flex; flex-direction:column; gap:2px; padding:12px 14px; border-radius:14px;
+  background:var(--accent-soft); color:var(--accent)}
+.gapnote b{font-size:20px; font-weight:700}
+.gapnote span{font-size:13px; color:var(--ink-2)}
+.gapnote.warn{background:var(--warn-soft); color:var(--warn)}
+.gapnote.ok{background:var(--ok-soft); color:var(--ok)}
+.gapnote.ok b{font-size:15px}
+.cattag.gaptag{background:var(--warn-soft); color:var(--warn)}
+
 /* sheet actions: fixed in place above any list */
 .acts{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:2px 0 12px}
 .act{display:flex; align-items:center; gap:8px; min-height:48px; padding:10px 12px; border-radius:14px;
@@ -1548,7 +1576,8 @@ function sanitize(d){
                 dir: x.dir === "in" ? "in" : "out",
                 date:sDate(x.date), loggedAt:sStr(x.loggedAt, 40),
                 amount:Math.max(0, sNum(x.amount, 0)), note:sStr(x.note, 120),
-                cat:sStr(x.cat, 24), settled:!!x.settled}));
+                cat:sStr(x.cat, 24), settled:!!x.settled, gap:!!x.gap,
+                src:x.src === "applepay" || x.src === "shortcut" ? x.src : ""}));
 
   const statements = (Array.isArray(d.statements) ? d.statements : []).slice(0, 5000)
     .filter(x => x && cardIds.has(sId(x.cardId)))
@@ -1585,8 +1614,12 @@ function sanitize(d){
     confirmedTs:sNum(a.confirmedTs, 0) || 0
   }).filter(a => a && a.id);
 
+  const cardAlias = {};
+  if(d.cardAlias && typeof d.cardAlias === "object")
+    for(const [k, v] of Object.entries(d.cardAlias).slice(0, 200))
+      if(cardIds.has(sId(v))) cardAlias[sStr(k, 60).toLowerCase()] = sId(v);
   return {
-    version:1, sources, bills, payments,
+    version:1, sources, bills, payments, cardAlias,
     cards, spends, statements, loans, accounts,
     theme:      d.theme === "dark" || d.theme === "light" ? d.theme : null,
     viewMode:   d.viewMode === "tiles" ? "tiles" : "list",
@@ -1919,13 +1952,13 @@ function movements(){
     if(s.cardId){
       const c = cardOf(s.cardId); if(!c) continue;
       out.push({kind:"card", date:s.date, amount:s.amount || 0, currency:c.currency,
-                label:s.note || s.cat || "Card spend", sub:displayName(c), cat:s.cat || "",
+                label:s.note || s.cat || "Card spend", sub:displayName(c), cat:s.cat || "", gap:!!s.gap,
                 dir:"out", cash:false, sourceId:c.sourceId});
     }else if(s.accountId){
       const a = acctOf(s.accountId); if(!a) continue;
       const inbound = s.dir === "in";
       out.push({kind:"cash", date:s.date, amount:s.amount || 0, currency:a.currency,
-                label:s.note || s.cat || (inbound ? "Money in" : "Spend"), cat:s.cat || "",
+                label:s.note || s.cat || (inbound ? "Money in" : "Spend"), cat:s.cat || "", gap:!!s.gap,
                 sub:((a.bank ? a.bank + " · " : "") + a.name).trim(),
                 dir:inbound ? "in" : "out", cash:true, sourceId:""});
     }
@@ -2069,6 +2102,7 @@ function historyHTML(){
           '<span class="info"><span class="name">' + esc(m.label) + '</span>' +
             '<span class="meta"><i class="ktag ' + m.kind + '">' +
               (m.kind === "bill" ? "bill" : m.kind === "card" ? "card" : "cash") + '</i>' +
+              (m.gap ? '<i class="cattag gaptag">unlogged</i>' : '') +
               (m.cat && m.cat !== m.label ? '<i class="cattag">' + esc(m.cat) + '</i>' : '') +
               esc(m.sub) + '</span></span>' +
           '<span class="a num ' + (m.dir === "in" ? "in" : m.cash ? "" : "oncard") + '">' +
@@ -2625,7 +2659,7 @@ function adopt(d){
     version:1,
     sources: c.sources, bills: c.bills, payments: c.payments,
     cards: c.cards, spends: c.spends, statements: c.statements,
-    loans: c.loans, accounts: c.accounts,
+    loans: c.loans, accounts: c.accounts, cardAlias: c.cardAlias,
     startPeriod: c.startPeriod, viewMode: c.viewMode,
     theme: c.theme, updatedAt: c.updatedAt
   });
@@ -3398,6 +3432,7 @@ function renderCardSheet(){
       '</div>' +
       (s.moved ? '<div class="hint" style="margin-top:8px">Balance now already includes everything below — it updates the moment you log something. Re-read from the card app when you want to reset it against the bank.</div>' : '') +
       movesHTML(cardSpends(c.id), c.currency, "Since the last balance update") +
+      driftHTML(x => x.cardId === c.id, c.currency) +
     '</div>' +
 
     /* ── the two dates a card runs on ── */
@@ -3501,14 +3536,9 @@ function wireCardSheet(c){
   };
 
   q("#cardConfirm").onclick = () => {
-    const v = prompt("Balance shown in your " + (c.name || "card") + " app right now:",
-                     String(c.balance || 0));
-    if(v === null) return;
-    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
-    if(!Number.isFinite(n) || n < 0) return toast("Enter a number");
-    markConfirmed(c, n); c.confirmedFrom = "manual";
-    settleMoves(x => x.cardId === c.id);                 // superseded by a fresh truth
-    patch(); reflow(); toast("Balance confirmed");
+    if(!c.name.trim()) return toast("Give the card a name first");
+    UI.cardDraft = false;
+    openBalanceUpdate("card", c.id, "card");
   };
   q("#cardSpend").onclick = () => {
     if(!c.name.trim()) return toast("Give the card a name first");
@@ -3800,6 +3830,7 @@ function openAccount(acctId){
         '<button class="act wide" id="aConfirm">' + ACT_I.sync + 'Update from my bank app</button>' +
       '</div>' +
       movesHTML(acctMoves(a.id), a.currency, "Since the last balance update") +
+      driftHTML(x => x.accountId === a.id, a.currency) +
     '</div>' +
 
     '<div class="sec"><span class="eyebrow">Account settings</span><div class="fields">' +
@@ -3829,14 +3860,9 @@ function openAccount(acctId){
   const patch = () => { save(); render(); };
   const reflow = () => { openAccount(a.id); render(); };
   q("#aConfirm").onclick = () => {
-    const v = prompt("Balance your bank app shows for " + (a.name || "this account") + ":",
-                     String(a.balance || 0));
-    if(v === null) return;
-    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
-    if(!Number.isFinite(n)) return toast("Enter a number");
-    markConfirmed(a, n);
-    settleMoves(x => x.accountId === a.id);                // superseded
-    save(); reflow(); toast("Balance confirmed");
+    if(!(a.name || a.bank || "").trim()) return toast("Give the account a name first");
+    UI.acctDraft = false;
+    openBalanceUpdate("acct", a.id, "acct");
   };
   const quickHere = dir => {
     if(!(a.name || a.bank || "").trim()) return toast("Give the account a name first");
@@ -3876,28 +3902,55 @@ function openRefreshAll(){
   const cards = cardsByAvailable();
   $("#sheetBody").innerHTML =
     '<div class="sec">' +
-      '<div class="hint" style="margin-bottom:12px">Open each card app and type what it shows. Anything you leave alone keeps its current figure.</div>' +
+      '<div class="hint" style="margin-bottom:12px">Open each card app and type what it shows. Leave a card blank to keep its current figure.</div>' +
       '<div class="fields">' + cards.map(c => {
         const s = cardState(c);
         return '<div class="field"><label for="rf-' + esc(c.id) + '">' + esc(c.name) +
-          '<span style="float:right;font-weight:500;color:var(--muted)">' +
-          (c.confirmedAt ? (s.age === 0 ? "today" : s.age + "d ago") : "never") + '</span></label>' +
-          '<input type="number" inputmode="decimal" step="0.01" id="rf-' + esc(c.id) +
-          '" data-refresh="' + esc(c.id) + '" value="' + (c.balance || 0) + '"></div>';
+          '<span style="float:right;font-weight:500;color:var(--muted)">expects ' + money(s.estimate, c.currency) +
+          ' &middot; ' + (c.confirmedAt ? (s.age === 0 ? "read today" : s.age + "d ago") : "never read") + '</span></label>' +
+          '<input type="text" inputmode="decimal" id="rf-' + esc(c.id) + '" data-refresh="' + esc(c.id) +
+          '" placeholder="' + esc(String(Math.round(s.estimate * 100) / 100)) + '">' +
+          '<div class="rfgap" data-rfgap="' + esc(c.id) + '"></div></div>';
       }).join("") + '</div>' +
-      '<button class="primary" id="refreshSave" style="margin-top:13px">Save all as confirmed today</button>' +
+      '<label class="rowtoggle"><span>File differences as unlogged spends</span>' +
+        '<input type="checkbox" id="rfFile" checked></label>' +
+      '<button class="primary" id="refreshSave" style="margin-top:13px">Save as confirmed today</button>' +
     '</div>';
-  $("#sheetBody").querySelector("#refreshSave").onclick = () => {
-    let n = 0;
-    $("#sheetBody").querySelectorAll("[data-refresh]").forEach(inp => {
-      const c = cardOf(inp.dataset.refresh); if(!c) return;
-      const v = parseFloat(inp.value);
-      if(!Number.isFinite(v) || v < 0) return;
-      if(Math.abs(v - (c.balance || 0)) > 0.005 || c.confirmedAt !== todayISO) n++;
+  const body = $("#sheetBody");
+  const gapFor = inp => {
+    const c = cardOf(inp.dataset.refresh), v = parseAmt(inp.value);
+    return (!c || inp.value.trim() === "" || !Number.isFinite(v)) ? null : {c, v, gap: v - cardState(c).estimate};
+  };
+  body.querySelectorAll("[data-refresh]").forEach(inp => inp.oninput = () => {
+    const r = gapFor(inp), box = body.querySelector('[data-rfgap="' + inp.dataset.refresh + '"]');
+    if(!r){ box.textContent = ""; box.className = "rfgap"; return; }
+    const g = r.gap;
+    box.className = "rfgap" + (g >= GAP_MIN ? " warn" : Math.abs(g) < GAP_MIN ? " ok" : "");
+    box.textContent = Math.abs(g) < GAP_MIN ? "Matches"
+      : g > 0 ? money(g, r.c.currency) + " more than expected — unlogged spending"
+      : money(-g, r.c.currency) + " less than expected — a credit or payment not logged";
+  });
+  body.querySelector("#refreshSave").onclick = () => {
+    const file = body.querySelector("#rfFile").checked;
+    let n = 0, filed = 0, cur = "USD";
+    body.querySelectorAll("[data-refresh]").forEach(inp => {
+      const r = gapFor(inp);
+      if(!r || r.v < 0) return;                       // blank = keep the current figure
+      const {c, v, gap} = r;
+      if(file && gap >= GAP_MIN){
+        S.spends.push({id:uid(), cardId:c.id, accountId:"", dir:"out", date:todayISO,
+          loggedAt:new Date().toISOString(), amount:Math.round(gap * 100) / 100,
+          note:"Unlogged spending", cat:"", settled:true, gap:true});
+        filed += gap; cur = c.currency;
+      }
       markConfirmed(c, v); c.confirmedFrom = "manual";
       settleMoves(x => x.cardId === c.id);
+      n++;
     });
-    save(); closeSheet(); toast(n ? n + " card" + (n===1?"":"s") + " updated" : "Nothing changed");
+    if(!n) return toast("Type at least one balance");
+    save(); closeSheet();
+    toast(n + " card" + (n === 1 ? "" : "s") + " updated" +
+          (filed ? " · " + money(filed, cur) + " filed as unlogged" : ""), 3400);
   };
   $("#scrim").classList.add("on");
   $("#sheet").classList.add("on");
@@ -4058,6 +4111,16 @@ function openData(){
   };
 
   if(q("#aiBtn")) q("#aiBtn").onclick = doCopyForAI;
+  body.querySelectorAll("[data-stuck]").forEach(sel => sel.onchange = async () => {
+    const x = (UI.inboxStuck || [])[+sel.dataset.stuck], c = cardOf(sel.value);
+    if(!x || !c) return;
+    S.cardAlias = S.cardAlias || {};
+    S.cardAlias[normName(x.card)] = c.id;
+    save();
+    toast("“" + x.card + "” is now " + displayName(c) + " — filing…", 2400);
+    if(syncReady()){ await pullInbox(); render(); }
+    if(UI.sheet === "data" && $("#sheet").classList.contains("on")) openData();
+  });
   // The token sync already uses is the one the shortcut needs; this is the
   // only place it ever leaves its hidden field, and only to this clipboard.
   if(q("#copyTok")) q("#copyTok").onclick = async () => {
@@ -4161,7 +4224,7 @@ $("#importFile").onchange = e => {
       Object.assign(S, {
         version:1, sources:d.sources, bills:d.bills, payments:d.payments,
         cards:d.cards, spends:d.spends, statements:d.statements,
-        loans:d.loans, accounts:d.accounts,
+        loans:d.loans, accounts:d.accounts, cardAlias:d.cardAlias,
         startPeriod:d.startPeriod, viewMode:d.viewMode, theme:d.theme
       });
       S.lastBackup = {at:d.exportedAt || new Date().toISOString(), sig:signature()};
@@ -4389,6 +4452,146 @@ $("#sheetBody").addEventListener("keydown", e => {
   }
 });
 
+/* ── balance update: say what was missed ────────────────────────────
+   Reading a balance from the bank used to overwrite the estimate
+   silently. Now the difference is shown and, when it is spending you
+   didn't log, filed as an "unlogged" spend so Activity stays true. It is
+   filed already settled: the new reading includes it.                  */
+const GAP_MIN = 0.5;
+/** Expected figure and what a reading means, for a card or an account. */
+function balanceCtx(kind, id){
+  if(kind === "card"){
+    const c = cardOf(id); if(!c) return null;
+    return {kind, holder:c, name:displayName(c), cur:c.currency, expected:cardState(c).estimate,
+            // a card's balance is what you owe: higher than expected = swipes not logged
+            gapOf: v => v - cardState(c).estimate};
+  }
+  const a = acctOf(id); if(!a) return null;
+  return {kind, holder:a, name:acctLabel(a), cur:a.currency, expected:accountState(a).estimate,
+          // an account holds money: lower than expected = money out not logged
+          gapOf: v => accountState(a).estimate - v};
+}
+function openBalanceUpdate(kind, id, back){
+  const ctx = balanceCtx(kind, id);
+  if(!ctx) return;
+  UI.bal = {kind, id, back, value:"", cat:"", file:true};
+  UI.sheet = "balance"; UI.cardId = null; UI.acctId = null;
+  $("#sheetTitle").textContent = ctx.name;
+  $("#sheetBody").innerHTML = '<div class="qa">' +
+    '<div class="balexp"><span>The app expects</span><b class="num">' + money(ctx.expected, ctx.cur) + '</b>' +
+      '<i>' + (kind === "card" ? "owed on this card" : "in this account") + ' &middot; last read ' +
+      (ctx.holder.confirmedAt ? shortDate(ctx.holder.confirmedAt) : 'never') + '</i></div>' +
+    '<div><div class="qa-lbl">' + (kind === "card" ? "Balance your card app shows" : "Balance your bank app shows") + '</div>' +
+      '<label class="qa-amt"><span class="qa-cur">' + curSym(ctx.cur) + '</span>' +
+      '<input id="balVal" type="text" inputmode="decimal" enterkeyhint="done" autocomplete="off" placeholder="0" ' +
+      'aria-label="Balance shown by your bank"></label></div>' +
+    '<div id="balGap"></div>' +
+    '<button class="primary qa-go" id="balSave">Update balance</button>' +
+  '</div>';
+  balanceSync();
+  const done = $("#sheetDone"); done.textContent = "Save"; done.classList.add("save");
+  $("#scrim").classList.add("on");
+  $("#sheet").classList.add("on");
+  const el = $("#balVal"); if(el) el.focus({preventScroll:true});
+}
+function balanceSync(){
+  const b = UI.bal; if(!b) return;
+  const ctx = balanceCtx(b.kind, b.id); if(!ctx) return;
+  const el = $("#balVal");
+  if(el) el.style.width = (Math.max(1, String(b.value || "").length) + 0.5) + "ch";
+  const v = parseAmt(b.value);
+  const box = $("#balGap");
+  if(!box) return;
+  if(!Number.isFinite(v) || b.value === ""){ box.innerHTML = ""; return; }
+  const gap = ctx.gapOf(v), amt = money(Math.abs(gap), ctx.cur);
+  if(Math.abs(gap) < GAP_MIN){
+    box.innerHTML = '<div class="gapnote ok"><b>Matches</b><span>Nothing was missed since the last reading.</span></div>';
+    return;
+  }
+  const out = gap > 0;
+  const what = ctx.kind === "card"
+    ? (out ? 'more than expected — probably spends you didn’t log'
+           : 'less than expected — a refund, credit or payment the app didn’t see')
+    : (out ? 'less than expected — money out you didn’t log'
+           : 'more than expected — money in you didn’t log');
+  const canFile = out || ctx.kind === "acct";
+  box.innerHTML = '<div class="gapnote ' + (out ? 'warn' : '') + '"><b class="num">' + amt + '</b><span>' + what + '</span></div>' +
+    (canFile
+      ? '<label class="rowtoggle" style="margin-top:10px"><span>' +
+          (out ? 'Add ' + amt + ' to Activity as an unlogged spend' : 'Add ' + amt + ' to Activity as money in') +
+        '</span><input type="checkbox" id="balFile"' + (b.file ? ' checked' : '') + '></label>' +
+        (out && b.file ? '<div style="margin-top:12px"><div class="qa-lbl">What was it, roughly?<em>optional</em></div>' +
+          '<div class="qa-wrap">' + CATS.map(c =>
+            '<button class="qa-chip" data-balcat="' + esc(c) + '" aria-pressed="' + (b.cat === c) + '">' + esc(c) + '</button>').join("") +
+          '</div></div>' : '')
+      : '');
+}
+function balanceSave(){
+  const b = UI.bal; if(!b) return closeSheet();
+  const ctx = balanceCtx(b.kind, b.id); if(!ctx) return closeSheet();
+  const v = parseAmt(b.value);
+  if(!Number.isFinite(v) || b.value === "" || (ctx.kind === "card" && v < 0)){
+    toast("Enter the balance your bank shows");
+    const el = $("#balVal"); if(el) el.focus();
+    return;
+  }
+  const gap = ctx.gapOf(v);
+  const h = ctx.holder, isCard = ctx.kind === "card";
+  let filed = "";
+  if(Math.abs(gap) >= GAP_MIN && b.file && (gap > 0 || !isCard)){
+    S.spends.push({id:uid(), cardId:isCard ? h.id : "", accountId:isCard ? "" : h.id,
+      dir: gap > 0 ? "out" : "in", date:todayISO, loggedAt:new Date().toISOString(),
+      amount:Math.round(Math.abs(gap) * 100) / 100,
+      note: gap > 0 ? "Unlogged spending" : "Unlogged money in",
+      cat: gap > 0 ? b.cat : "", settled:true, gap:true});
+    filed = " · " + money(Math.abs(gap), ctx.cur) + " filed as unlogged";
+  }
+  markConfirmed(h, v);
+  if(isCard){ h.confirmedFrom = "manual"; settleMoves(x => x.cardId === h.id); }
+  else settleMoves(x => x.accountId === h.id && !x.gap);
+  save();
+  const back = b.back;
+  UI.bal = null;
+  closeSheet();
+  if(back === "card") openCard(h.id);
+  else if(back === "acct") openAccount(h.id);
+  toast("Balance updated" + filed, 3200);
+}
+/** How much went unlogged on this card or account lately — the honest
+ *  measure of how far the app drifts between readings. */
+function driftOf(pred, days){
+  const since = iso(new Date(Date.now() - days * 864e5));
+  const list = S.spends.filter(x => x.gap && x.dir !== "in" && pred(x) && (x.date || "") >= since);
+  return {n:list.length, total:list.reduce((t,x) => t + (x.amount || 0), 0)};
+}
+function driftHTML(pred, cur){
+  const d = driftOf(pred, 90);
+  if(!d.n) return "";
+  return '<div class="hint" style="margin-top:10px">Unlogged in the last 90 days: <b>' + money(d.total, cur) +
+    '</b> across ' + d.n + ' balance update' + (d.n === 1 ? '' : 's') + '.</div>';
+}
+$("#sheetBody").addEventListener("input", e => {
+  if(UI.sheet !== "balance" || !UI.bal || e.target.id !== "balVal") return;
+  UI.bal.value = e.target.value; balanceSync();
+});
+$("#sheetBody").addEventListener("change", e => {
+  if(UI.sheet !== "balance" || !UI.bal || e.target.id !== "balFile") return;
+  UI.bal.file = e.target.checked; balanceSync();
+});
+$("#sheetBody").addEventListener("click", e => {
+  if(UI.sheet !== "balance" || !UI.bal) return;
+  const t = e.target.closest("button"); if(!t) return;
+  if(t.dataset.balcat){
+    UI.bal.cat = UI.bal.cat === t.dataset.balcat ? "" : t.dataset.balcat;
+    $("#sheetBody").querySelectorAll("[data-balcat]").forEach(x =>
+      x.setAttribute("aria-pressed", String(x.dataset.balcat === UI.bal.cat)));
+  }
+  if(t.id === "balSave") balanceSave();
+});
+$("#sheetBody").addEventListener("keydown", e => {
+  if(UI.sheet === "balance" && e.key === "Enter" && e.target.id === "balVal"){ e.preventDefault(); balanceSave(); }
+});
+
 /* ── iPhone shortcut inbox ──────────────────────────────────────────
    A Shortcut can't safely rewrite the whole ledger file, so it drops one
    small JSON file per spend into inbox/ beside it. On open the ledger
@@ -4415,28 +4618,39 @@ function matchBy(list, label, name){
   const loose = list.filter(x => { const v = normName(label(x)); return v.includes(k) || k.includes(v); });
   return loose.length === 1 ? loose[0] : null;
 }
-/** One inbox file → one spend, or null if it can't be placed. */
+/** A card the Wallet calls something else ("Gold Card") is matched once by
+ *  hand, then remembered: S.cardAlias maps the Wallet's name to a card id. */
+function cardForName(name){
+  const alias = (S.cardAlias || {})[normName(name)];
+  const viaAlias = alias && cardOf(alias);
+  if(viaAlias && !viaAlias.archived) return viaAlias;
+  return matchBy(activeCards(), displayName, name);
+}
+/** One inbox file → {spend}, {skip} (nothing to file) or {stuck} (needs a card). */
 function inboxEntry(e, id){
-  if(!e || typeof e !== "object") return null;
-  const amount = parseAmt(e.amount);
-  if(!(amount > 0) || amount > 1e8) return null;
-  const c = e.card ? matchBy(activeCards(), displayName, e.card) : null;
+  if(!e || typeof e !== "object") return {skip:true};
+  const applePay = e.src === "applepay";
+  let amount = parseAmt(e.amount);
+  if(!(amount > 0) && applePay) amount = parseAmt(String(e.raw || "").match(/[\d.,]+\d/) || "");
+  // a transit tap or a zero-amount authorisation has nothing to file
+  if(!(amount > 0) || amount > 1e8) return applePay ? {skip:true} : {stuck:{card:e.card || "", amount:0, note:""}};
+  const note = sStr(applePay ? (e.merchant || e.name || "") : e.note, 120).trim();
+  const c = e.card ? cardForName(e.card) : null;
   const a = !c && e.account ? matchBy(S.accounts, acctLabel, e.account) : null;
-  if(!c && !a) return null;
+  if(!c && !a) return {stuck:{card:String(e.card || e.account || ""), amount, note, applePay}};
   const m = String(e.at || "").match(/^(\d{4}-\d{2}-\d{2})(?:[T ](\d{2})[-:.](\d{2})(?:[-:.](\d{2}))?)?/);
   const date = m ? sDate(m[1]) : todayISO;
   let ts = m ? new Date(date + "T" + (m[2] || "12") + ":" + (m[3] || "00") + ":" + (m[4] || "00")) : new Date();
   if(!Number.isFinite(ts.getTime()) || ts.getTime() > Date.now() + 864e5) ts = new Date();
   const holder = c || a;
-  const cat = CATS.find(x => normName(x) === normName(e.cat)) || "";
-  return {
+  const cat = CATS.find(x => normName(x) === normName(e.cat)) || catForNote(note);
+  return {spend:{
     id, cardId: c ? c.id : "", accountId: a ? a.id : "",
     dir: a && e.dir === "in" ? "in" : "out",
-    date, loggedAt: ts.toISOString(), amount,
-    note: sStr(e.note, 120).trim(), cat,
+    date, loggedAt: ts.toISOString(), amount, note, cat, src: applePay ? "applepay" : "shortcut",
     // logged before the balance was last read, so that reading already has it
     settled: !!(holder.confirmedTs && ts.getTime() < holder.confirmedTs)
-  };
+  }};
 }
 let inboxBusy = false;
 async function pullInbox(){
@@ -4459,9 +4673,10 @@ async function pullInbox(){
       if(!r.ok) continue;
       let e = null;
       try{ e = JSON.parse(b64dec((await r.json()).content)); }catch(err){ e = null; }
-      const sp = inboxEntry(e, id);
-      if(!sp){ stuck.push(f.name); continue; }
-      S.spends.push(sp); filed.push(f); added++;
+      const res = inboxEntry(e, id);
+      if(res.skip){ filed.push(f); continue; }         // nothing to file; clear it away
+      if(res.stuck){ stuck.push(Object.assign({file:f.name}, res.stuck)); continue; }
+      S.spends.push(res.spend); filed.push(f); added++;
     }
     UI.inboxStuck = stuck;
     if(!filed.length) return;
@@ -4473,6 +4688,8 @@ async function pullInbox(){
     }
     if(added) toast(added === 1 ? "Filed 1 spend from your iPhone"
                                 : "Filed " + added + " spends from your iPhone", 3200);
+    if(stuck.length && !added) toast(stuck.length + " iPhone entr" + (stuck.length === 1 ? "y needs" : "ies need") +
+                                     " a card — see More", 3600);
   }catch(e){
     syncCfg().err = e.message;
   }finally{
@@ -4493,15 +4710,26 @@ function renderSyncPill(){
 $("#syncPill").onclick = () => openData();
 
 /** iPhone Shortcut setup, inside the More sheet. */
+function stuckHTML(){
+  const list = UI.inboxStuck || [];
+  if(!list.length) return "";
+  const opts = activeCards().map(c => '<option value="' + esc(c.id) + '">' + esc(displayName(c)) + '</option>').join("");
+  return '<div class="stuck"><div class="qa-lbl">Waiting for a card</div>' + list.map((x, i) =>
+    '<div class="stuckrow"><div><b>' + (x.amount ? money(x.amount, "USD") : "No amount") +
+      (x.note ? ' &middot; ' + esc(x.note) : '') + '</b>' +
+      '<span>' + (x.applePay ? 'Apple Pay' : 'Shortcut') + ' called the card “' + esc(x.card || "?") + '”</span></div>' +
+    (x.card && x.amount
+      ? '<select data-stuck="' + i + '" aria-label="Which card is this?"><option value="">Which card?</option>' + opts + '</select>'
+      : '') + '</div>').join("") +
+    '<div class="hint" style="margin-top:6px">Pick once and the app remembers that name for every future entry.</div></div>';
+}
 function shortcutSectionHTML(){
-  const stuck = (UI.inboxStuck || []).length;
   return '<div class="sec"><span class="eyebrow">Log from anywhere on your iPhone</span>' +
     '<div class="hint" style="margin-bottom:10px">Double-tap the back of your iPhone and it asks: which card, how much, what for. ' +
       'The entry lands here the next time this app opens.</div>' +
     (syncReady() ? '' : '<div class="bstat dirty"><i class="dot" style="background:var(--warn)"></i>' +
       '<span>Needs Automatic sync turned on first (below)</span></div>') +
-    (stuck ? '<div class="bstat dirty"><i class="dot" style="background:var(--warn)"></i><span>' + stuck +
-      ' shortcut entr' + (stuck === 1 ? 'y' : 'ies') + ' could not be matched to a card — check the card name</span></div>' : '') +
+    stuckHTML() +
     (getToken()
       ? '<button class="ghost" id="copyTok" style="margin-bottom:8px">Copy my sync token</button>' +
         '<div id="tokShow" hidden style="margin-bottom:10px"><input class="qa-note" id="tokField" readonly ' +
@@ -4514,6 +4742,17 @@ function shortcutSectionHTML(){
       '<li>Double-tap the back of your phone. Pick a card, type the amount, pick what it was for. Done.</li>' +
     '</ol>' +
     '<div class="hint" style="margin-top:8px">The card list comes from this ledger, so new cards show up in the shortcut automatically.</div>' +
+  '</div>' +
+  '<div class="sec"><span class="eyebrow">Log Apple Pay taps automatically</span>' +
+    '<div class="hint" style="margin-bottom:10px">Every time you pay with Apple Pay, the card, amount and merchant are logged — nothing to type. ' +
+      'Swiped cards and online card-number purchases still need the + button.</div>' +
+    '<a class="primary" href="Log%20Apple%20Pay.shortcut?v=1" download style="display:grid;place-items:center;text-decoration:none">Get the “Log Apple Pay” shortcut</a>' +
+    '<ol class="steps">' +
+      '<li>Add it, and paste your token when asked (<span class="kbd">Copy my sync token</span> above).</li>' +
+      '<li>In Shortcuts open <span class="kbd">Automation → +</span> and choose <span class="kbd">Transaction</span>. Pick your cards, then set <span class="kbd">Run Immediately</span> and turn off <span class="kbd">Notify When Run</span>.</li>' +
+      '<li>Tap <span class="kbd">Next → New Blank Automation</span>, add <span class="kbd">Run Shortcut</span>, choose <span class="kbd">Log Apple Pay</span>, and set its input to <span class="kbd">Shortcut Input</span>.</li>' +
+      '<li>If Wallet names a card differently (say “Gold Card”), its first tap waits here under <i>Waiting for a card</i> — pick the card once and it’s remembered.</li>' +
+    '</ol>' +
   '</div>';
 }
 
@@ -4649,7 +4888,8 @@ $("#sheetBody").addEventListener("click", e => {
   else if(UI.sheet === "account") openAccount(UI.acctId);
   render();
 });
-$("#sheetDone").onclick = () => UI.sheet === "quick" ? quickSave() : closeSheet();
+$("#sheetDone").onclick = () => UI.sheet === "quick" ? quickSave()
+                              : UI.sheet === "balance" ? balanceSave() : closeSheet();
 $("#scrim").onclick = closeSheet;
 document.addEventListener("keydown", e => { if(e.key === "Escape" && $("#sheet").classList.contains("on")) closeSheet(); });
 
