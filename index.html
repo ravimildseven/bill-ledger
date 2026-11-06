@@ -969,6 +969,26 @@ body{font-size:15px; letter-spacing:-.003em}
 .qa .seg{margin-bottom:-4px}
 .qa-go{margin-top:4px}
 
+/* sheet actions: fixed in place above any list */
+.acts{display:grid; grid-template-columns:1fr 1fr; gap:8px; margin:2px 0 12px}
+.act{display:flex; align-items:center; gap:8px; min-height:48px; padding:10px 12px; border-radius:14px;
+  background:var(--surface-2); color:var(--ink); font-size:13.5px; font-weight:620; text-align:left}
+.act svg{width:18px; height:18px; flex:none; fill:none; stroke:currentColor; stroke-width:2;
+  stroke-linecap:round; stroke-linejoin:round; color:var(--accent)}
+.act.main{background:var(--accent); color:var(--accent-ink)}
+.act.main svg{color:var(--accent-ink)}
+.act.wide{grid-column:1 / -1}
+.movelist{border-top:0; margin-top:14px; padding-top:0}
+.movehead{display:flex; align-items:baseline; gap:8px; margin-bottom:4px}
+.movehead .eyebrow{margin:0}
+.movesum{margin-left:auto; font-size:12px; color:var(--muted); font-weight:600}
+.morefold summary{display:flex; align-items:center; justify-content:center; gap:8px; list-style:none; cursor:pointer;
+  padding:11px 0 4px; font-size:13px; font-weight:650; color:var(--accent); border-top:1px solid var(--line-soft)}
+.morefold summary::-webkit-details-marker{display:none}
+.morefold[open] summary{display:none}
+.morefold .chev{border-color:var(--accent)}
+.mnote .cattag{margin:0 0 0 7px; vertical-align:1px}
+
 /* iPhone shortcut setup */
 .steps{margin:10px 0 0; padding-left:20px; font-size:13px; color:var(--ink-2); line-height:1.6}
 .steps li{margin-bottom:4px}
@@ -1578,6 +1598,13 @@ function sanitize(d){
 }
 
 /* ── icons ──────────────────────────────────────────────────────── */
+const ACT_I = {
+  spend:'<svg viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></svg>',
+  pay:'<svg viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></svg>',
+  later:'<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/></svg>',
+  sync:'<svg viewBox="0 0 24 24"><path d="M19.5 12a7.5 7.5 0 0 1-13 5.1M4.5 12a7.5 7.5 0 0 1 13-5.1"/><path d="M17.5 3.5v3.6h-3.6M6.5 20.5v-3.6h3.6"/></svg>',
+  in:'<svg viewBox="0 0 24 24"><path d="M12 4.5v15M6 13.5l6 6 6-6"/></svg>'
+};
 const I = {
   check:'<svg viewBox="0 0 24 24"><path d="M4.5 12.5l5 5 10-11"/></svg>',
   minus:'<svg viewBox="0 0 24 24"><path d="M5 12h14"/></svg>',
@@ -3345,6 +3372,12 @@ function renderCardSheet(){
         '<div class="paystate-sub">' +
           (s.limit ? Math.round((s.util || 0) * 100) + '% of ' + money(s.limit, c.currency) + ' used'
                    : 'No credit limit recorded') + '</div></div>' +
+      '<div class="acts">' +
+        '<button class="act main" id="cardSpend">' + ACT_I.spend + 'Log a spend</button>' +
+        '<button class="act" id="cardPay">' + ACT_I.pay + 'Log a payment</button>' +
+        '<button class="act" id="cardArrange">' + ACT_I.later + 'Pay later</button>' +
+        '<button class="act" id="cardConfirm">' + ACT_I.sync + 'Update balance</button>' +
+      '</div>' +
 
       '<div class="mini" style="margin-top:11px">' +
         '<div class="mini-row"><span><b>Balance now</b></span>' +
@@ -3364,11 +3397,7 @@ function renderCardSheet(){
           : '') +
       '</div>' +
       (s.moved ? '<div class="hint" style="margin-top:8px">Balance now already includes everything below — it updates the moment you log something. Re-read from the card app when you want to reset it against the bank.</div>' : '') +
-      movesHTML(cardSpends(c.id), c.currency, "Since that reading") +
-      '<button class="ghost" id="cardSpend" style="margin-top:11px">Log a spend</button>' +
-      '<button class="ghost" id="cardPay">Log a payment</button>' +
-      '<button class="ghost" id="cardArrange">Arrange a payment for later</button>' +
-      '<button class="ghost" id="cardConfirm">Update balance from my card app</button>' +
+      movesHTML(cardSpends(c.id), c.currency, "Since the last balance update") +
     '</div>' +
 
     /* ── the two dates a card runs on ── */
@@ -3482,14 +3511,9 @@ function wireCardSheet(c){
     patch(); reflow(); toast("Balance confirmed");
   };
   q("#cardSpend").onclick = () => {
-    const v = prompt("Amount just spent on " + (c.name || "this card") + ":", "");
-    if(v === null) return;
-    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
-    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
-    const note = prompt("What for? (optional)", "") || "";
-    S.spends.push({id:uid(), cardId:c.id, accountId:"", dir:"out", date:todayISO,
-                   loggedAt:new Date().toISOString(), amount:n, note:note.trim()});
-    patch(); reflow(); toast("Logged " + money(n, c.currency));
+    if(!c.name.trim()) return toast("Give the card a name first");
+    UI.cardDraft = false;
+    openQuick({mode:"card", cardId:c.id, back:{card:c.id}});
   };
 
   q("#cName").onchange  = e => {
@@ -3579,18 +3603,34 @@ function payFromNote(x, cur){
 }
 
 /** Timeline of hand-logged movements, newest first, each removable. */
+const MOVES_SHOWN = 4;
+function moveRowHTML(m, cur){
+  return '<div class="moverow"><span class="d num">' + shortDate(m.date) + '</span>' +
+    '<span class="mnote">' + (m.note ? esc(m.note) : (m.dir === "in" ? "Money in" : (m.cat ? esc(m.cat) : "Spend"))) +
+      (m.cat && m.note ? '<i class="cattag">' + esc(m.cat) + '</i>' : '') + '</span>' +
+    '<span class="a num' + (m.dir === "in" ? " in" : "") + '">' +
+      (m.dir === "in" ? "+" : "−") + money(m.amount || 0, cur) + '</span>' +
+    '<button class="paydel" data-delmove="' + esc(m.id) + '" aria-label="Remove entry">' +
+    '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>';
+}
+/** Newest few always visible; the rest fold away so a long month never
+ *  pushes the sheet's actions out of reach (they sit above this now). */
 function movesHTML(list, cur, title){
   if(!list.length) return "";
   const sorted = list.slice().sort((a,b) =>
     (b.loggedAt || b.date || "").localeCompare(a.loggedAt || a.date || ""));
-  return '<div class="movelist"><span class="eyebrow">' + title + '</span>' +
-    sorted.map(m =>
-      '<div class="moverow"><span class="d num">' + shortDate(m.date) + '</span>' +
-      '<span class="mnote">' + (m.note ? esc(m.note) : (m.dir === "in" ? "money in" : "spend")) + '</span>' +
-      '<span class="a num' + (m.dir === "in" ? " in" : "") + '">' +
-        (m.dir === "in" ? "+" : "−") + money(m.amount || 0, cur) + '</span>' +
-      '<button class="paydel" data-delmove="' + esc(m.id) + '" aria-label="Remove entry">' +
-      '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>').join("") +
+  const out = sorted.filter(m => m.dir !== "in").reduce((n,m) => n + (m.amount || 0), 0);
+  const inn = sorted.filter(m => m.dir === "in").reduce((n,m) => n + (m.amount || 0), 0);
+  const head = sorted.slice(0, MOVES_SHOWN), rest = sorted.slice(MOVES_SHOWN);
+  return '<div class="movelist"><div class="movehead"><span class="eyebrow">' + title + '</span>' +
+      '<span class="movesum num">' + sorted.length + ' &middot; ' +
+        (out ? '−' + money(out, cur) : '') + (out && inn ? ' ' : '') + (inn ? '+' + money(inn, cur) : '') +
+      '</span></div>' +
+    head.map(m => moveRowHTML(m, cur)).join("") +
+    (rest.length
+      ? '<details class="morefold"><summary>Show ' + rest.length + ' more<span class="chev" aria-hidden="true"></span></summary>' +
+          rest.map(m => moveRowHTML(m, cur)).join("") + '</details>'
+      : '') +
   '</div>';
 }
 
@@ -3754,10 +3794,12 @@ function openAccount(acctId){
               (st.inn ? ' · ' + money(st.inn, a.currency) + ' in' : '')
             : 'Last read' + (a.confirmedAt ? ' ' + shortDate(a.confirmedAt) : ' never')) +
         '</div></div>' +
-      movesHTML(acctMoves(a.id), a.currency, "Since that reading") +
-      '<button class="primary" id="aConfirm" style="margin-top:11px">Update from my bank app</button>' +
-      '<button class="ghost" id="aSpend">Log a spend</button>' +
-      '<button class="ghost" id="aIn">Log money in</button>' +
+      '<div class="acts">' +
+        '<button class="act main" id="aSpend">' + ACT_I.spend + 'Log a spend</button>' +
+        '<button class="act" id="aIn">' + ACT_I.in + 'Money in</button>' +
+        '<button class="act wide" id="aConfirm">' + ACT_I.sync + 'Update from my bank app</button>' +
+      '</div>' +
+      movesHTML(acctMoves(a.id), a.currency, "Since the last balance update") +
     '</div>' +
 
     '<div class="sec"><span class="eyebrow">Account settings</span><div class="fields">' +
@@ -3786,16 +3828,6 @@ function openAccount(acctId){
   const body = $("#sheetBody"), q = id => body.querySelector(id);
   const patch = () => { save(); render(); };
   const reflow = () => { openAccount(a.id); render(); };
-  const ask = (label, dir) => {
-    const v = prompt(label, "");
-    if(v === null) return;
-    const n = parseFloat(String(v).replace(/[^0-9.\-]/g, ""));
-    if(!Number.isFinite(n) || n <= 0) return toast("Enter an amount");
-    const note = prompt("What for? (optional)", "") || "";
-    S.spends.push({id:uid(), accountId:a.id, cardId:"", dir, date:todayISO,
-                   loggedAt:new Date().toISOString(), amount:n, note:note.trim()});
-    save(); reflow(); toast((dir === "in" ? "+" : "−") + money(n, a.currency));
-  };
   q("#aConfirm").onclick = () => {
     const v = prompt("Balance your bank app shows for " + (a.name || "this account") + ":",
                      String(a.balance || 0));
@@ -3806,8 +3838,13 @@ function openAccount(acctId){
     settleMoves(x => x.accountId === a.id);                // superseded
     save(); reflow(); toast("Balance confirmed");
   };
-  q("#aSpend").onclick = () => ask("Amount spent from " + (a.name || "this account") + ":", "out");
-  q("#aIn").onclick    = () => ask("Amount paid into " + (a.name || "this account") + ":", "in");
+  const quickHere = dir => {
+    if(!(a.name || a.bank || "").trim()) return toast("Give the account a name first");
+    UI.acctDraft = false;
+    openQuick({mode:"acct", acctId:a.id, dir, back:{acct:a.id}});
+  };
+  q("#aSpend").onclick = () => quickHere("out");
+  q("#aIn").onclick    = () => quickHere("in");
 
   q("#aBank").onchange = e => { a.bank = e.target.value.trim(); patch(); };
   q("#aName").onchange = e => { a.name = e.target.value.trim(); UI.acctDraft = false;
@@ -4306,8 +4343,11 @@ function quickSave(){
   });
   if(onCard) S.lastCardId = c.id; else S.lastAcctId = a.id;
   save();
+  const back = q.back;
   UI.q = null;
   closeSheet();
+  if(back && back.card && cardOf(back.card)) openCard(back.card);
+  else if(back && back.acct && acctOf(back.acct)) openAccount(back.acct);
   toast((isIn ? "+" : "") + money(n, onCard ? c.currency : a.currency) +
         (cat ? " · " + cat : "") + " · " + (onCard ? displayName(c) : acctLabel(a)), 2600);
 }
