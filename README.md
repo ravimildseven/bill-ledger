@@ -27,11 +27,49 @@ restoring your own backup file on your own phone.
 
 1. Open the site in Safari
 2. Share → **Add to Home Screen** — it then runs full-screen like an app
-3. Tap the database icon → **Restore from a file** and pick your backup
+3. Tap **More** → **Restore from a file** and pick your backup
 
 > Heads-up: a page added to the Home Screen gets its **own** storage, separate from
 > Safari's. Set it up in whichever one you plan to use, or restore the same backup
 > into both.
+
+## Logging a spend
+
+Tap the big **+** at the bottom. The keypad is already up: type the amount, and
+your last-used card is already picked — tap a different one if needed, tap what
+it was for (Groceries, Dining, Fuel…), optionally type where, and **Save**. A
+place you've used before fills in its category by itself.
+
+Opening `…/bill-ledger/#add` goes straight to that screen.
+
+Updating a card or account balance no longer deletes the spends logged before
+it: they're marked settled, so they stop counting toward the live balance but
+stay in **Activity** with their categories.
+
+## Log from anywhere on your iPhone (Back Tap)
+
+Double-tap the back of the phone and a Shortcut asks *which card*, *how much*
+and *what for* — no need to open the app. Needs **Automatic sync** (below).
+
+1. On the iPhone open **More → Get the "Log Spend" shortcut** (or open
+   `Log Spend.shortcut` from this site) and tap **Add Shortcut**. When it asks,
+   paste a GitHub token with **Contents: Read and write** on your data repo —
+   the same kind of token sync uses.
+2. **Settings → Accessibility → Touch → Back Tap → Double Tap → Log Spend**.
+3. Open the ledger once after updating, so it publishes your card list for the
+   shortcut.
+
+How it works: the shortcut reads your card list from the `quick` block the app
+writes into `bill-ledger.json`, then drops one small file per spend into
+`inbox/` in the data repo. The next time the app opens (or comes back to the
+foreground) it files those as spends, saves the ledger, and only then deletes
+the inbox files. Each entry's id comes from its file name, so a retry never
+counts a spend twice. An entry naming a card that doesn't exist is left in the
+inbox and flagged under **More**.
+
+The token lives inside the shortcut on your phone. `tools/build_shortcut.py`
+regenerates the shortcut (then sign it with
+`shortcuts sign --mode anyone --input unsigned.shortcut --output "Log Spend.shortcut"`).
 
 ## Reminders
 
@@ -79,7 +117,7 @@ claude.ai artifact build blocks.
 
 ## Backups
 
-The database icon shows an amber dot whenever there are changes you haven't backed
+**More** shows an amber dot whenever there are changes you haven't backed
 up yet. Tap it and choose **Back up to Files / iCloud Drive**.
 
 To make backups land in iCloud automatically:
@@ -106,4 +144,6 @@ Then open <http://localhost:8791>.
 | `index.html` | The entire app — markup, styles and logic |
 | `manifest.webmanifest` | Add-to-Home-Screen metadata |
 | `icon.svg`, `icon.png` | App icon |
+| `Log Spend.shortcut` | Signed iPhone Shortcut for Back Tap logging |
+| `tools/build_shortcut.py` | Regenerates that shortcut |
 | `.nojekyll` | Serve files as-is, skipping Jekyll |
