@@ -969,6 +969,12 @@ body{font-size:15px; letter-spacing:-.003em}
 .qa .seg{margin-bottom:-4px}
 .qa-go{margin-top:4px}
 
+/* payment sources */
+.srcblock{padding:6px 0 10px; border-top:1px solid var(--line-soft)}
+.srcblock:first-child{border-top:0}
+.srclink{width:100%; min-height:42px; border:0; border-radius:12px; padding:0 12px; background:var(--surface-2);
+  font-size:14px; margin-top:2px}
+
 /* planned payments waiting for a yes */
 .pendcard{margin:4px 16px 10px; padding:14px 14px 12px; border-radius:var(--r-lg); background:var(--warn-soft)}
 .pendhead b{display:block; font-size:15px; color:var(--warn)}
@@ -1401,14 +1407,16 @@ function cardState(c){
   // logged afterwards. No date filter: comparing dates dropped a spend made on
   // the same day it was confirmed, which silently did nothing.
   const spent = cardSpends(c.id).reduce((n,s) => n + (s.amount || 0), 0);
-  const repaid = c.billId
-    ? S.payments.filter(p => p.billId === c.billId && p.status === "paid" &&
-                             !isScheduled(p) && afterConfirm(c, p))
-                .reduce((n,p) => n + (p.amount || 0), 0)
-    : 0;
+  const live = p => p.status === "paid" && !isScheduled(p) && afterConfirm(c, p);
+  const repaid = S.payments.filter(p => live(p) &&
+                   ((c.billId && p.billId === c.billId) || paysCardOff(p, c)))
+                 .reduce((n,p) => n + (p.amount || 0), 0);
+  // bills paid *with* this card, and balances transferred onto it
+  const charged = S.payments.filter(p => live(p) && chargesCard(p, c))
+                 .reduce((n,p) => n + (p.amount || 0), 0);
 
   const interest = accrued(c, age || 0);
-  const estimate = Math.max(0, (c.balance || 0) + interest + spent - repaid);
+  const estimate = Math.max(0, (c.balance || 0) + interest + spent + charged - repaid);
   const limit    = c.limit || 0;
   const avail    = limit ? limit - estimate : null;
   const util     = limit ? estimate / limit : null;
@@ -1433,11 +1441,11 @@ function cardState(c){
               : util >= 0.8  ? "tight"
               : util >= 0.3  ? "watch" : "safe";
   return {
-    limit, estimate, avail, util, level, age, interest, spent, repaid,
+    limit, estimate, avail, util, level, age, interest, spent, repaid, charged,
     confirmed: c.balance || 0, fresh, justCut, needsUpdate, unknown,
     // stop presenting a figure as solid once it has drifted out of date
     shaky: unknown || fresh === "stale" || fresh === "never",
-    moved: spent > 0 || repaid > 0 || interest >= 1
+    moved: spent > 0 || repaid > 0 || charged > 0 || interest >= 1
   };
 }
 /** Give a card its place in the monthly list, creating the bill if needed. */
@@ -1550,7 +1558,8 @@ const sPeriod = v => /^\d{4}-\d{2}$/.test(String(v)) ? String(v)
 function sanitize(d){
   if(!d || typeof d !== "object") throw new Error("shape");
   let sources = (Array.isArray(d.sources) ? d.sources : []).slice(0, 60)
-    .map(s => ({id:sId(s && s.id), name:sStr(s && s.name, 40) || "Account", color:sHex(s && s.color), accountId:sId(s && s.accountId)}))
+    .map(s => ({id:sId(s && s.id), name:sStr(s && s.name, 40) || "Account", color:sHex(s && s.color), accountId:sId(s && s.accountId),
+                cardId:sId(s && s.cardId), linkedAt:s && s.linkedAt ? sDate(s.linkedAt) : ""}))
     .filter(s => s.id);
   if(!sources.length) sources = [{id:"account", name:"Account", color:"#5C6670"}];
   const srcIds = new Set(sources.map(s => s.id));
@@ -1568,7 +1577,9 @@ function sanitize(d){
     anchorM:  sInt(b.anchorM, 0, 11, 0),
     endYear:  b.endYear == null || b.endYear === "" ? null : sInt(b.endYear, 1970, 2999, 2999),
     note:     sStr(b.note, 120),
-    archived: !!b.archived
+    archived: !!b.archived,
+    payCardId:   sId(b.payCardId),
+    payLinkedAt: b.payLinkedAt ? sDate(b.payLinkedAt) : ""
   }).filter(b => b && b.id);
   const billIds = new Set(bills.map(b => b.id));
 
@@ -1610,6 +1621,8 @@ function sanitize(d){
     archived: !!c.archived
   }).filter(c => c && c.id);
   const cardIds = new Set(cards.map(c => c.id));
+  for(const x of sources) if(!cardIds.has(x.cardId)){ x.cardId = ""; x.linkedAt = ""; }
+  for(const x of bills)   if(!cardIds.has(x.payCardId)){ x.payCardId = ""; x.payLinkedAt = ""; }
 
   const acctIdsEarly = new Set((Array.isArray(d.accounts) ? d.accounts : [])
     .map(a => sId(a && a.id)).filter(Boolean));
@@ -2018,9 +2031,10 @@ function movements(){
   for(const p of S.payments){
     if(p.status !== "paid" || isScheduled(p)) continue;
     const b = billOf(p.billId); if(!b) continue;
+    const viaCard = srcCard(p.sourceId);
     out.push({kind:"bill", date:p.date, amount:p.amount || 0, currency:b.currency,
-              label:billDisplayName(b), sub:srcOf(p.sourceId).name,
-              dir:"out", cash:true, sourceId:p.sourceId});
+              label:billDisplayName(b), sub:viaCard ? "on " + displayName(viaCard) : srcOf(p.sourceId).name,
+              dir:"out", cash:!viaCard, sourceId:p.sourceId});
   }
   for(const s of S.spends){
     if(s.cardId){
@@ -3115,6 +3129,14 @@ function renderSheet(){
         '</div>' +
         '<div class="hint">' + FREQ[b.freq].label.toLowerCase() + ' from ' +
           MON3[b.anchorM] + ' ' + b.anchorY + (b.endYear ? ' through ' + b.endYear : '') + '</div>') +
+        (S.cards.some(c => c.billId === b.id && !c.archived) || !activeCards().length ? '' :
+          '<div class="field"><label for="bPays">Pays off a card</label><select id="bPays">' +
+            '<option value="">No — an ordinary bill</option>' +
+            activeCards().map(c => '<option value="' + esc(c.id) + '"' + (c.id === b.payCardId ? ' selected' : '') + '>' +
+              esc(displayName(c)) + '</option>').join("") +
+          '</select></div>' +
+          '<div class="hint">For a bill like “pay back the card the rent went on”: its payments come off that card' +
+            (b.payLinkedAt ? ' (counted from ' + shortDate(b.payLinkedAt) + ')' : ' from today on') + '.</div>') +
         '<div class="field"><label for="bNote">Note</label>' +
           '<input type="text" id="bNote" placeholder="optional" value="' + esc(b.note) + '"></div>' +
       '</div>' +
@@ -3187,6 +3209,12 @@ function wireSheet(b, pk){
   on("#bSrc", "onchange", e => { b.sourceId = e.target.value; patch(); });
   on("#bDay", "onchange", e => { b.dueDay = parseInt(e.target.value,10) || 1; patch(); });
   on("#bNote","onchange", e => { b.note = e.target.value.trim(); patch(); });
+  on("#bPays","onchange", e => {
+    b.payCardId = e.target.value;
+    b.payLinkedAt = b.payCardId ? todayISO : "";
+    patch(); renderSheet();
+    toast(b.payCardId ? "Payments from today come off " + displayName(cardOf(b.payCardId)) : "No longer pays a card");
+  });
   on("#bFreq","onchange", e => {
     b.freq = e.target.value;
     if(b.freq !== "monthly" && b.anchorM === 0 && b.anchorY === 2026){
@@ -3253,8 +3281,31 @@ const acctOf = id => S.accounts.find(a => a.id === id);
  *  that a name match, so a source called SoFi finds "SoFi Checking" without
  *  anyone having to wire it up first. That indirection being unset silently
  *  is why payments were not reducing any balance. */
+/* ── money that moves between cards ─────────────────────────────────
+   A source can be a credit card (rent charged to a card, a balance
+   transfer from another card): its payments add to that card instead of
+   leaving an account. A bill can pay off a card it isn't the card's own
+   bill for (a "pay back" bill). Both count only from the day they were
+   linked, so linking never re-counts months you already reconciled.    */
+const sinceLink = (p, since) => !since || (p.date || "") >= since;
+function srcCard(sourceId){
+  const x = S.sources.find(s => s.id === sourceId);
+  const c = x && x.cardId ? cardOf(x.cardId) : null;
+  return c && !c.archived ? c : null;
+}
+/** A paid payment whose money goes onto card c (charged or transferred). */
+function chargesCard(p, c){
+  const x = S.sources.find(s => s.id === p.sourceId);
+  return !!(x && x.cardId === c.id && sinceLink(p, x.linkedAt) && p.billId !== c.billId);
+}
+/** A paid payment that pays card c down through some other bill. */
+function paysCardOff(p, c){
+  const b = billOf(p.billId);
+  return !!(b && b.id !== c.billId && b.payCardId === c.id && sinceLink(p, b.payLinkedAt));
+}
 function accountForSource(sourceId){
   if(!sourceId) return null;
+  if(srcCard(sourceId)) return null;       // that money goes onto a card, not out of an account
   const explicit = S.accounts.find(a => S.sources.some(x => x.id === sourceId && x.accountId === a.id));
   if(explicit) return explicit;
   const src = S.sources.find(x => x.id === sourceId);
@@ -3632,6 +3683,8 @@ function renderCardSheet(){
               '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.interest, c.currency) + '</span></div>' : '') +
             (s.spent ? '<div class="mini-row"><span class="d" style="width:auto">logged spend</span>' +
               '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.spent, c.currency) + '</span></div>' : '') +
+            (s.charged ? '<div class="mini-row"><span class="d" style="width:auto">bills paid with it / transfers in</span>' +
+              '<span class="a" style="font-weight:500;color:var(--muted)">+' + money(s.charged, c.currency) + '</span></div>' : '') +
             (s.repaid ? '<div class="mini-row"><span class="d" style="width:auto">payments</span>' +
               '<span class="a" style="font-weight:500;color:var(--ok)">−' + money(s.repaid, c.currency) + '</span></div>' : '')
           : '') +
@@ -3834,6 +3887,9 @@ function payFromNote(x, cur){
   if(isScheduled(x))
     return '<div class="schednote">Arranged for ' + shortDate(x.date) +
            ' &middot; ' + money(x.amount || 0, cur) + ' not deducted yet</div>';
+  const onCard = srcCard(x.sourceId);
+  if(onCard)
+    return '<div class="schednote calm">Goes onto ' + esc(displayName(onCard)) + ' (paid with that card)</div>';
   const acct = accountForSource(x.sourceId);
   if(!acct)
     return '<div class="schednote warn">Not linked to an account &mdash; this will not reduce any balance</div>';
@@ -4273,13 +4329,26 @@ function openData(){
       '<div class="hint" style="margin-top:9px">It contains balances, limits and card names. Paste it only somewhere you are comfortable putting that.</div>' +
     '</div>' +
     '<div class="sec"><span class="eyebrow">Payment sources</span>' +
-      '<div class="mini">' + S.sources.map(s =>
-        '<div class="mini-row"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
-        '<span>' + esc(s.name) + '</span>' +
-        '<span class="a num" style="font-weight:500;color:var(--muted)">' +
-          S.bills.filter(b => !b.archived && b.sourceId === s.id).length + ' bills</span>' +
-        '<button class="icon-btn" data-delsrc="' + esc(s.id) + '" aria-label="Remove ' + esc(s.name) + '" style="width:30px;height:30px">' +
-          '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>').join("") +
+      '<div class="hint" style="margin-bottom:6px">Say where each source’s money really comes from, so payments come off the right balance.</div>' +
+      '<div class="mini">' + S.sources.map(s => {
+        const guess = !s.accountId && !s.cardId ? accountForSource(s.id) : null;
+        const val = s.cardId ? "c:" + s.cardId : s.accountId ? "a:" + s.accountId : "";
+        return '<div class="srcblock"><div class="mini-row" style="border-top:0"><i class="dot" style="background:' + esc(s.color) + '"></i>' +
+          '<span>' + esc(s.name) + '</span>' +
+          '<span class="a num" style="font-weight:500;color:var(--muted)">' +
+            S.bills.filter(b => !b.archived && b.sourceId === s.id).length + ' bills</span>' +
+          '<button class="icon-btn" data-delsrc="' + esc(s.id) + '" aria-label="Remove ' + esc(s.name) + '" style="width:30px;height:30px">' +
+            '<svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>' +
+          '<select class="srclink" data-srclink="' + esc(s.id) + '" aria-label="Where ' + esc(s.name) + ' payments come from">' +
+            '<option value="">' + (guess ? 'Matched by name: ' + esc(acctLabel(guess)) : 'Not linked — deducts from nothing') + '</option>' +
+            (S.accounts.length ? '<optgroup label="Out of an account">' + S.accounts.map(a =>
+              '<option value="a:' + esc(a.id) + '"' + (val === "a:" + a.id ? ' selected' : '') + '>' + esc(acctLabel(a)) + '</option>').join("") + '</optgroup>' : '') +
+            (activeCards().length ? '<optgroup label="Onto a credit card (charged or balance transfer)">' + activeCards().map(c =>
+              '<option value="c:' + esc(c.id) + '"' + (val === "c:" + c.id ? ' selected' : '') + '>' + esc(displayName(c)) + '</option>').join("") + '</optgroup>' : '') +
+          '</select>' +
+          (s.cardId && s.linkedAt ? '<div class="hint">Counted from ' + shortDate(s.linkedAt) + ' on.</div>' : '') +
+        '</div>';
+      }).join("") +
       '</div>' +
       '<div class="fields"><div class="two">' +
         '<div class="field"><label for="nsName">New source</label>' +
@@ -4358,6 +4427,20 @@ function openData(){
     S.sources.push({id:uid(), name:n, color:body.querySelector("#nsColor").value});
     save(); openData(); render(); toast("Added " + n);
   };
+  body.querySelectorAll("[data-srclink]").forEach(sel => sel.onchange = () => {
+    const x = S.sources.find(s => s.id === sel.dataset.srclink);
+    if(!x) return;
+    const [kind, id] = sel.value ? sel.value.split(":") : ["", ""];
+    const wasCard = x.cardId;
+    x.accountId = kind === "a" ? id : "";
+    x.cardId    = kind === "c" ? id : "";
+    if(x.cardId && x.cardId !== wasCard) x.linkedAt = todayISO;
+    if(!x.cardId) x.linkedAt = "";
+    save(); openData(); render();
+    toast(kind === "c" ? x.name + " payments now go onto " + displayName(cardOf(id)) + " from today"
+        : kind === "a" ? x.name + " now comes out of " + acctLabel(acctOf(id))
+        : x.name + " is matched by name again");
+  });
   body.querySelectorAll("[data-delsrc]").forEach(btn => btn.onclick = () => {
     const id = btn.dataset.delsrc;
     const used = S.bills.filter(b => b.sourceId === id).length;
