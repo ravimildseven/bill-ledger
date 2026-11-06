@@ -4021,6 +4021,19 @@ function openData(){
   };
 
   if(q("#aiBtn")) q("#aiBtn").onclick = doCopyForAI;
+  // The token sync already uses is the one the shortcut needs; this is the
+  // only place it ever leaves its hidden field, and only to this clipboard.
+  if(q("#copyTok")) q("#copyTok").onclick = async () => {
+    const tok = getToken().trim();
+    try{
+      await navigator.clipboard.writeText(tok);
+      toast("Token copied — paste it into the shortcut", 2800);
+    }catch(e){
+      const f = q("#tokField"); q("#tokShow").hidden = false;
+      f.value = tok; f.focus(); f.select();
+      toast("Couldn't copy automatically — select the text and copy it", 3600);
+    }
+  };
   if(q("#calBtn")) q("#calBtn").onclick = doCalendar;
   body.querySelector("#expBtn").onclick = doExport;
   body.querySelector("#impBtn").onclick = () => $("#importFile").click();
@@ -4449,9 +4462,14 @@ function shortcutSectionHTML(){
       '<span>Needs Automatic sync turned on first (below)</span></div>') +
     (stuck ? '<div class="bstat dirty"><i class="dot" style="background:var(--warn)"></i><span>' + stuck +
       ' shortcut entr' + (stuck === 1 ? 'y' : 'ies') + ' could not be matched to a card — check the card name</span></div>' : '') +
-    '<a class="primary" href="Log%20Spend.shortcut?v=2" download style="display:grid;place-items:center;text-decoration:none">Get the “Log Spend” shortcut</a>' +
+    (getToken()
+      ? '<button class="ghost" id="copyTok" style="margin-bottom:8px">Copy my sync token</button>' +
+        '<div id="tokShow" hidden style="margin-bottom:10px"><input class="qa-note" id="tokField" readonly ' +
+          'autocapitalize="off" autocorrect="off" spellcheck="false" style="font-size:13px"></div>'
+      : '') +
+    '<a class="primary" href="Log%20Spend.shortcut?v=3" download style="display:grid;place-items:center;text-decoration:none">Get the “Log Spend” shortcut</a>' +
     '<ol class="steps">' +
-      '<li>Open that link on your iPhone and tap <span class="kbd">Add Shortcut</span>. It asks for your GitHub token — paste the same kind of token sync uses.</li>' +
+      '<li>Tap <span class="kbd">Copy my sync token</span> first. Then open the shortcut link and tap <span class="kbd">Add Shortcut</span>; when it asks for the token, paste.</li>' +
       '<li><span class="kbd">Settings → Accessibility → Touch → Back Tap → Double Tap</span> → choose <span class="kbd">Log Spend</span>.</li>' +
       '<li>Double-tap the back of your phone. Pick a card, type the amount, pick what it was for. Done.</li>' +
     '</ol>' +

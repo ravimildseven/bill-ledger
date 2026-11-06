@@ -35,10 +35,14 @@ def headers():
 
 t, ledger, parsed, quick, cards, card, amt, cats, cat, note, when, entry, text, b64, put, ok, msg, why = (
     U() for _ in range(18))
-grp, guard = U(), U()
+grp, guard, clean = U(), U(), U()
 A = [
     act("gettext", UUID=t, WFTextActionText="PASTE_YOUR_GITHUB_TOKEN"),
-    act("setvariable", WFVariableName="Token", WFInput=att(out(t, "Text"))),
+    # a paste can carry a trailing space or newline, which GitHub rejects as
+    # "Bad credentials" — keep only the token itself
+    act("text.replace", UUID=clean, WFInput=tts(out(t, "Text")), WFReplaceTextFind="\\s+",
+        WFReplaceTextReplace="", WFReplaceTextRegularExpression=True, WFReplaceTextCaseSensitive=False),
+    act("setvariable", WFVariableName="Token", WFInput=att(out(clean, "Updated Text"))),
     act("downloadurl", UUID=ledger, WFURL=API + FILE, WFHTTPMethod="GET",
         ShowHeaders=True, WFHTTPHeaders=headers()),
     # GitHub labels the raw file application/vnd.github.raw+json, which Shortcuts
