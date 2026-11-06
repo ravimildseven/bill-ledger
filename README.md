@@ -102,6 +102,11 @@ The data panel can add every bill to your calendar as a repeating event with an
 alert — 9am on the due date, or 1, 3 or 7 days before. Recurring bills repeat on
 their own, so you only redo this when you add or change a bill.
 
+Tick **Also remind me to update each card's balance** and each card with a
+statement day also gets a monthly 9am reminder the morning after its statement
+closes — when the card app's figure is freshest — pointing you at
+**Update balance**, which then shows anything you forgot to log.
+
 It generates a standard `.ics` file, so the OS does the reminding: no notification
 permissions, no service worker, and it rides iCloud to your other devices. Events
 carry stable UIDs, so re-adding them updates the existing entries rather than
@@ -122,6 +127,14 @@ data repo. Then under **Permissions**, click **Repository permissions** to *expa
 it* — it starts collapsed, which makes the setting look missing. The list is
 alphabetical: scroll to **Contents** and change the dropdown on its right from *No
 access* to **Read and write**. Leave every other row alone.
+
+When two devices (say the Home Screen app and Safari, or phone and Mac) both
+change things before syncing, the copies are **merged record by record**, not
+replaced. Each device keeps a private fingerprint of every record as of its last
+sync, so it can tell something you added from something the other device
+deleted, and an edit on one side from an edit on both; only a record edited on
+both sides falls back to the newer copy. A save that finds GitHub changed
+underneath it merges and retries instead of overwriting.
 
 That token cannot read your other repos or act on your account, and you can revoke it
 at any time.

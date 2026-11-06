@@ -2481,7 +2481,10 @@ function icsRule(b){
   const step = {monthly:1, quarterly:3, half:6}[b.freq] || 1;
   return "FREQ=MONTHLY" + (step > 1 ? ";INTERVAL=" + step : "") + ";BYMONTHDAY=" + d;
 }
-function buildICS(daysBefore){
+/** The day after a statement closes is when the bank's figure is freshest. */
+const checkInDay = c => c.statementDay >= 28 ? 1 : c.statementDay + 1;
+const stmtCards = () => activeCards().filter(c => c.statementDay > 0);
+function buildICS(daysBefore, withCards){
   const now = new Date();
   const stamp = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
   // alarm fires at 09:00 local, `daysBefore` days ahead of the all-day start
@@ -2523,13 +2526,44 @@ function buildICS(daysBefore){
     L.push("END:VALARM");
     L.push("END:VEVENT");
   }
+
+  // one monthly check-in per card, the morning after its statement closes
+  const cards = withCards ? stmtCards() : [];
+  for(const c of cards){
+    const day = checkInDay(c);
+    const first = nextOnDay(day) || new Date();
+    const dt = first.getFullYear() + pad(first.getMonth() + 1) + pad(first.getDate());
+    const next = new Date(first); next.setDate(next.getDate() + 1);
+    const dtEnd = next.getFullYear() + pad(next.getMonth() + 1) + pad(next.getDate());
+    const title = "Update " + displayName(c) + " balance";
+    L.push("BEGIN:VEVENT");
+    L.push("UID:stmt-" + c.id + "@bill-ledger");
+    L.push("DTSTAMP:" + stamp);
+    L.push("DTSTART;VALUE=DATE:" + dt);
+    L.push("DTEND;VALUE=DATE:" + dtEnd);
+    L.push("RRULE:FREQ=MONTHLY;BYMONTHDAY=" + day);
+    L.push(icsFold("SUMMARY:" + icsEsc(title)));
+    L.push(icsFold("DESCRIPTION:" + icsEsc(
+      "The statement closed yesterday, so the card app's balance is fresh. " +
+      "In Bill Ledger: Cards → " + displayName(c) + " → Update balance. " +
+      "It shows anything you forgot to log.\nAdded by Bill Ledger")));
+    L.push("TRANSP:TRANSPARENT");
+    L.push("BEGIN:VALARM");
+    L.push("ACTION:DISPLAY");
+    L.push(icsFold("DESCRIPTION:" + icsEsc(title + " — statement just closed")));
+    L.push("TRIGGER;RELATED=START:PT9H");
+    L.push("END:VALARM");
+    L.push("END:VEVENT");
+  }
   L.push("END:VCALENDAR");
-  return {text: L.join("\r\n") + "\r\n", count: bills.length};
+  return {text: L.join("\r\n") + "\r\n", count: bills.length + cards.length,
+          bills: bills.length, cards: cards.length};
 }
 async function doCalendar(){
   const sel = $("#remWhen");
   const daysBefore = sel ? parseInt(sel.value, 10) : 1;
-  const {text, count} = buildICS(daysBefore);
+  const rc = $("#remCards");
+  const {text, count} = buildICS(daysBefore, !rc || rc.checked);
   if(!count) return toast("No bills to remind you about yet");
   const name = "bill-ledger-reminders.ics";
   const file = new File([text], name, {type:"text/calendar"});
@@ -2621,6 +2655,68 @@ async function syncPull(){
   syncCfg().sha = j.sha;
   return {data: JSON.parse(b64dec(j.content))};
 }
+/* ── merging two copies of the ledger ───────────────────────────────
+   Phone, Safari and Mac each hold a copy. Replacing one with the other
+   loses whatever the older side added, so the two are merged record by
+   record instead. Each device keeps a fingerprint of every record as of
+   its last successful sync (the "base"); against it a three-way merge can
+   tell an addition from a deletion, and an edit on one side from an edit
+   on both. Only a record edited on both sides falls back to the newer
+   copy. The base never leaves this device.                             */
+const COLLS = ["sources","bills","payments","cards","spends","statements","loans","accounts"];
+const BASE_KEY = "billLedger.syncBase";
+function recHash(r){
+  const t = JSON.stringify(r, Object.keys(r).sort());   // records are flat
+  let h = 5381;
+  for(let i = 0; i < t.length; i++) h = ((h * 33) ^ t.charCodeAt(i)) >>> 0;
+  return h.toString(36) + "." + t.length.toString(36);
+}
+function snapshotOf(d){
+  const out = {};
+  for(const k of COLLS){ out[k] = {}; for(const r of d[k] || []) out[k][r.id] = recHash(r); }
+  return out;
+}
+const sameSnapshot = (a, b) => JSON.stringify(snapshotOf(a)) === JSON.stringify(snapshotOf(b));
+function loadBase(){ try{ return JSON.parse(localStorage.getItem(BASE_KEY) || "null"); }catch(e){ return null; } }
+function saveBase(d){ try{ localStorage.setItem(BASE_KEY, JSON.stringify(snapshotOf(d))); }catch(e){} }
+/** This device's ledger in the same sanitised shape the remote arrives in. */
+const localCanon = () => sanitize(JSON.parse(payload()));
+
+function mergeLedgers(L, R, base){
+  const localNewer = (L.updatedAt || 0) >= (R.updatedAt || 0);
+  const N = localNewer ? L : R, O = localNewer ? R : L;
+  const out = Object.assign({}, N);
+  let conflicts = 0;
+  for(const k of COLLS){
+    const lm = new Map((L[k] || []).map(r => [r.id, r]));
+    const rm = new Map((R[k] || []).map(r => [r.id, r]));
+    const nm = localNewer ? lm : rm;
+    const b = base && base[k];
+    // newer copy's order first, then anything only the older copy has
+    const ids = [...(N[k] || []).map(r => r.id), ...(O[k] || []).map(r => r.id).filter(id => !nm.has(id))];
+    const res = [];
+    for(const id of ids){
+      const l = lm.get(id), r = rm.get(id), bh = b ? b[id] : undefined;
+      if(l && r){
+        const hl = recHash(l), hr = recHash(r);
+        if(hl === hr || hr === bh) res.push(l);        // same, or only this side changed it
+        else if(hl === bh) res.push(r);                // only the other side changed it
+        else { res.push(localNewer ? l : r); conflicts++; }
+      }else{
+        const only = l || r;
+        // it was there at the last sync and one side has since deleted it;
+        // the deletion stands unless the surviving copy was edited after
+        if(bh !== undefined && recHash(only) === bh) continue;
+        res.push(only);
+      }
+    }
+    out[k] = res;
+  }
+  out.cardAlias = Object.assign({}, O.cardAlias || {}, N.cardAlias || {});
+  out.updatedAt = Math.max(L.updatedAt || 0, R.updatedAt || 0);
+  return {data:out, conflicts};
+}
+
 async function syncPush(){
   const c = syncCfg();
   // Refuse to replace a remote that exists with a ledger holding nothing.
@@ -2629,18 +2725,32 @@ async function syncPush(){
     c.err = "Refused to overwrite your synced data with an empty ledger";
     return;
   }
+  let sent = payload();
   const body = {
     message: "Ledger update — " + new Date().toISOString().slice(0, 16).replace("T", " "),
-    content: b64enc(payload())
+    content: b64enc(sent)
   };
   if(c.sha) body.sha = c.sha;
   let res = await ghReq("PUT", body);
   if(res.status === 409 || res.status === 422){
-    const cur = await ghReq("GET");                 // stale sha — re-read, retry once
-    if(cur.ok){ body.sha = c.sha = (await cur.json()).sha; res = await ghReq("PUT", body); }
+    // another device wrote since we last read: merge its copy in, then retry
+    // once — never overwrite it, which is how entries used to vanish
+    const cur = await ghReq("GET");
+    if(cur.ok){
+      const j0 = await cur.json();
+      body.sha = c.sha = j0.sha;
+      const m = mergeLedgers(localCanon(), sanitize(JSON.parse(b64dec(j0.content))), loadBase());
+      adopt(m.data);
+      S.updatedAt = Date.now();
+      saveLocal();
+      sent = payload();
+      body.content = b64enc(sent);
+      res = await ghReq("PUT", body);
+    }
   }
   if(!res.ok) throw new Error(ghErr(res.status));
   const j = await res.json();
+  saveBase(sanitize(JSON.parse(sent)));         // exactly what GitHub now holds
   c.sha = j.content.sha;
   c.at  = new Date().toISOString();
   c.err = null;
@@ -2684,7 +2794,8 @@ async function runSync(quiet){
   // a background sync must never replace a sheet the user is working in
   if(UI.sheet === "data" && $("#sheet").classList.contains("on")) openData();
 }
-/** On open: whichever side is newer wins. */
+/** On open: merge this device's copy with GitHub's, push if that changed
+ *  GitHub's, and remember the result as the new base. */
 async function syncBoot(){
   if(!syncReady() || syncing) return;
   UI.lastBoot = Date.now();
@@ -2705,12 +2816,21 @@ async function syncBoot(){
         adopt(d);
         S.pristine = false;
         S.lastBackup = {at:new Date().toISOString(), sig:signature()};
-      }else if(remoteAt > localAt){
-        adopt(d);
-        S.lastBackup = {at:new Date().toISOString(), sig:signature()};
-      }else if(localAt > remoteAt){
-        await syncPush(); pushed = true;
+        saveBase(sanitize(d));
+      }else if(remoteAt !== localAt || !sameSnapshot(localCanon(), sanitize(d))){
+        const R = sanitize(d);
+        const m = mergeLedgers(localCanon(), R, loadBase());
+        if(!sameSnapshot(m.data, localCanon())) adopt(m.data);
+        if(!sameSnapshot(m.data, R)){
+          S.updatedAt = Math.max(Date.now(), remoteAt + 1);   // the merge is the newest copy
+          await syncPush(); pushed = true;
+        }else{
+          S.updatedAt = remoteAt;
+          saveBase(R);
+          S.lastBackup = {at:new Date().toISOString(), sig:signature()};
+        }
       }else{
+        saveBase(sanitize(d));
         S.lastBackup = {at:new Date().toISOString(), sig:signature()};
       }
       // a remote written before the shortcut existed has no card list for it
@@ -4048,8 +4168,12 @@ function openData(){
           '<option value="3">3 days before</option>' +
           '<option value="7">1 week before</option>' +
         '</select></div>' +
-      '<button class="ghost" id="calBtn" style="margin-top:10px">Add ' +
-        S.bills.filter(b => !b.archived).length + ' reminders to Calendar</button>' +
+      (stmtCards().length
+        ? '<label class="rowtoggle"><span>Also remind me to update each card’s balance the morning after its statement closes (' +
+            stmtCards().length + ' card' + (stmtCards().length === 1 ? '' : 's') + ')</span>' +
+          '<input type="checkbox" id="remCards" checked></label>'
+        : '<div class="hint" style="margin-top:9px">Set a statement day on your cards to get a monthly reminder to update each balance.</div>') +
+      '<button class="ghost" id="calBtn" style="margin-top:10px">Add reminders to Calendar</button>' +
       '<div class="hint" style="margin-top:9px">Adding them again replaces the old ones rather than duplicating, as long as you keep them in the same calendar.</div>' +
     '</div>' +
     '<div class="sec"><span class="eyebrow">Ask an AI</span>' +
