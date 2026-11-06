@@ -33,15 +33,33 @@ def headers():
         ("X-GitHub-Api-Version", 0, tts("2022-11-28")),
     ])
 
-t, ledger, quick, cards, card, amt, cats, cat, note, when, entry, text, b64, put, ok, msg = (U() for _ in range(16))
-grp = U()
+t, ledger, parsed, quick, cards, card, amt, cats, cat, note, when, entry, text, b64, put, ok, msg, why = (
+    U() for _ in range(18))
+grp, guard = U(), U()
 A = [
     act("gettext", UUID=t, WFTextActionText="PASTE_YOUR_GITHUB_TOKEN"),
     act("setvariable", WFVariableName="Token", WFInput=att(out(t, "Text"))),
     act("downloadurl", UUID=ledger, WFURL=API + FILE, WFHTTPMethod="GET",
         ShowHeaders=True, WFHTTPHeaders=headers()),
+    # GitHub labels the raw file application/vnd.github.raw+json, which Shortcuts
+    # does not treat as JSON on its own — parse it explicitly.
+    act("detect.dictionary", UUID=parsed, WFInput=att(out(ledger, "Contents of URL"))),
     act("getvalueforkey", UUID=quick, WFGetDictionaryValueType="Value", WFDictionaryKey="quick",
-        WFInput=att(out(ledger, "Contents of URL"))),
+        WFInput=att(out(parsed, "Dictionary"))),
+    # No card list means GitHub refused the request (usually the token) or the
+    # app hasn't published the list yet. Say which, and stop.
+    act("conditional", GroupingIdentifier=guard, WFControlFlowMode=0, WFCondition=101,
+        WFInput={"Type": "Variable", "Variable": att(out(quick, "Dictionary Value"))}),
+    act("getvalueforkey", UUID=why, WFGetDictionaryValueType="Value", WFDictionaryKey="message",
+        WFInput=att(out(parsed, "Dictionary"))),
+    act("alert", WFAlertActionTitle="Couldn't load your cards",
+        WFAlertActionMessage=tts("GitHub said: ", out(why, "Dictionary Value"),
+            "\n\nIf that says Bad credentials or Not Found, the token is wrong or lacks Contents access "
+            "to bill-ledger-data — edit the shortcut and paste it again. If it's blank, open the "
+            "ledger app once so it publishes your card list."),
+        WFAlertActionCancelButtonShown=False),
+    act("exit"),
+    act("conditional", GroupingIdentifier=guard, WFControlFlowMode=2),
     act("getvalueforkey", UUID=cards, WFGetDictionaryValueType="Value", WFDictionaryKey="cards",
         WFInput=att(out(quick, "Dictionary Value"))),
     act("choosefromlist", UUID=card, WFInput=att(out(cards, "Dictionary Value")),
